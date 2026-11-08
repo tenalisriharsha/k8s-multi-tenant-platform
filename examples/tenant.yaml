@@ -1,0 +1,17 @@
+name: acme-corp
+quota:
+  cpuRequest: "2"
+  memoryRequest: 4Gi
+  cpuLimit: "4"
+  memoryLimit: 8Gi
+  maxPods: "20"
+limitRange:
+  defaultCPURequest: 100m
+  defaultMemoryRequest: 128Mi
+  defaultCPULimit: 500m
+  defaultMemoryLimit: 512Mi
+allowedNamespaces:
+  - ingress-nginx
+adminSubject:
+  kind: Group
+  name: acme-admins

@@ -24,38 +24,44 @@ const (
 
 // Quota caps the aggregate resources a tenant's namespace may consume.
 type Quota struct {
-	CPURequest    string
-	MemoryRequest string
-	CPULimit      string
-	MemoryLimit   string
+	CPURequest    string `json:"cpuRequest"`
+	MemoryRequest string `json:"memoryRequest"`
+	CPULimit      string `json:"cpuLimit"`
+	MemoryLimit   string `json:"memoryLimit"`
 	// MaxPods bounds the number of pods the namespace may run concurrently.
-	MaxPods string
+	MaxPods string `json:"maxPods"`
 }
 
 // LimitRange sets the per-container defaults and bounds applied when a pod
 // in the tenant's namespace omits its own resource requests/limits.
 type LimitRange struct {
-	DefaultCPURequest    string
-	DefaultMemoryRequest string
-	DefaultCPULimit      string
-	DefaultMemoryLimit   string
+	DefaultCPURequest    string `json:"defaultCPURequest"`
+	DefaultMemoryRequest string `json:"defaultMemoryRequest"`
+	DefaultCPULimit      string `json:"defaultCPULimit"`
+	DefaultMemoryLimit   string `json:"defaultMemoryLimit"`
 }
 
 // AdminSubject is the RBAC subject bound to the tenant-admin Role in the
 // tenant's namespace.
 type AdminSubject struct {
-	Kind      SubjectKind
-	Name      string
-	Namespace string // required when Kind == SubjectKindServiceAccount
+	Kind      SubjectKind `json:"kind"`
+	Name      string      `json:"name"`
+	Namespace string      `json:"namespace,omitempty"` // required when Kind == SubjectKindServiceAccount
 }
 
 // Spec is the declarative, cluster-independent description of a tenant.
 // Everything tenantctl builds and applies is derived from a Spec.
 type Spec struct {
-	Name         string
-	Quota        Quota
-	LimitRange   LimitRange
-	AdminSubject AdminSubject
+	Name       string     `json:"name"`
+	Quota      Quota      `json:"quota"`
+	LimitRange LimitRange `json:"limitRange"`
+	// AllowedNamespaces lists additional namespaces (matched by their
+	// kubernetes.io/metadata.name label, same as the built-in DNS egress
+	// rule) that this tenant's namespace may exchange traffic with in both
+	// directions, e.g. a shared ingress controller namespace. Leave empty
+	// for the default same-namespace-only isolation boundary.
+	AllowedNamespaces []string     `json:"allowedNamespaces,omitempty"`
+	AdminSubject      AdminSubject `json:"adminSubject"`
 }
 
 // DefaultQuota returns a conservative, non-zero quota suitable for a

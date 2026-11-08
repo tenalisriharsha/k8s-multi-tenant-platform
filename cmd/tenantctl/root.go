@@ -11,9 +11,11 @@ import (
 	"github.com/tenalisriharsha/k8s-multi-tenant-platform/internal/tenant"
 )
 
-// specFlags holds the CLI flags shared by generate and create, since both
-// build a tenant.Spec from user input before doing something with it.
+// specFlags holds the CLI flags shared by generate, create, and update,
+// since all three build a tenant.Spec from user input before doing
+// something with it.
 type specFlags struct {
+	file string
 	name string
 
 	cpuRequest    string
@@ -27,6 +29,8 @@ type specFlags struct {
 	defaultCPULimit      string
 	defaultMemoryLimit   string
 
+	allowedNamespaces []string
+
 	adminKind      string
 	adminName      string
 	adminNamespace string
@@ -36,7 +40,9 @@ func addSpecFlags(cmd *cobra.Command, f *specFlags) {
 	dq := tenant.DefaultQuota()
 	dl := tenant.DefaultLimitRange()
 
-	cmd.Flags().StringVar(&f.name, "name", "", "tenant name (required; must be a valid DNS label)")
+	cmd.Flags().StringVarP(&f.file, "file", "f", "", "load the tenant spec from a YAML file instead of flags (GitOps mode); when set, --name and --admin-name are not required and the other spec flags below are ignored")
+
+	cmd.Flags().StringVar(&f.name, "name", "", "tenant name (required unless --file is set; must be a valid DNS label)")
 
 	cmd.Flags().StringVar(&f.cpuRequest, "cpu-request", dq.CPURequest, "total CPU requests allowed in the tenant namespace")
 	cmd.Flags().StringVar(&f.memoryRequest, "memory-request", dq.MemoryRequest, "total memory requests allowed in the tenant namespace")
@@ -49,8 +55,10 @@ func addSpecFlags(cmd *cobra.Command, f *specFlags) {
 	cmd.Flags().StringVar(&f.defaultCPULimit, "default-cpu-limit", dl.DefaultCPULimit, "default per-container CPU limit")
 	cmd.Flags().StringVar(&f.defaultMemoryLimit, "default-memory-limit", dl.DefaultMemoryLimit, "default per-container memory limit")
 
+	cmd.Flags().StringArrayVar(&f.allowedNamespaces, "allow-namespace", nil, "additional namespace allowed bidirectional NetworkPolicy traffic with this tenant (repeatable), e.g. a shared ingress controller namespace")
+
 	cmd.Flags().StringVar(&f.adminKind, "admin-kind", "Group", "RBAC subject kind bound as tenant admin: User, Group, or ServiceAccount")
-	cmd.Flags().StringVar(&f.adminName, "admin-name", "", "RBAC subject name bound as tenant admin (required)")
+	cmd.Flags().StringVar(&f.adminName, "admin-name", "", "RBAC subject name bound as tenant admin (required unless --file is set)")
 	cmd.Flags().StringVar(&f.adminNamespace, "admin-namespace", "", "namespace of the admin ServiceAccount (required when --admin-kind=ServiceAccount)")
 }
 
@@ -70,12 +78,30 @@ func (f *specFlags) toSpec() tenant.Spec {
 			DefaultCPULimit:      f.defaultCPULimit,
 			DefaultMemoryLimit:   f.defaultMemoryLimit,
 		},
+		AllowedNamespaces: f.allowedNamespaces,
 		AdminSubject: tenant.AdminSubject{
 			Kind:      tenant.SubjectKind(f.adminKind),
 			Name:      f.adminName,
 			Namespace: f.adminNamespace,
 		},
 	}
+}
+
+// resolveSpec builds the tenant.Spec that generate/create/update will act
+// on: from --file when set, otherwise from the rest of the spec flags. It
+// deliberately does not use cobra's MarkFlagRequired for --name/--admin-name
+// so that --file can satisfy them instead.
+func (f *specFlags) resolveSpec() (tenant.Spec, error) {
+	if f.file != "" {
+		return tenant.LoadSpecFile(f.file)
+	}
+	if f.name == "" {
+		return tenant.Spec{}, fmt.Errorf("required flag \"name\" not set (or use --file to load a spec from a file)")
+	}
+	if f.adminName == "" {
+		return tenant.Spec{}, fmt.Errorf("required flag \"admin-name\" not set (or use --file to load a spec from a file)")
+	}
+	return f.toSpec(), nil
 }
 
 // clusterFlags holds the CLI flags shared by every subcommand that talks
@@ -122,6 +148,7 @@ func newRootCmd() *cobra.Command {
 
 	root.AddCommand(newGenerateCmd())
 	root.AddCommand(newCreateCmd())
+	root.AddCommand(newUpdateCmd())
 	root.AddCommand(newDeleteCmd())
 	root.AddCommand(newListCmd())
 
