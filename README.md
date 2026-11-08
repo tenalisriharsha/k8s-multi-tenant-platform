@@ -20,12 +20,16 @@ those details so it can be read end to end or dropped into a real cluster.
 | | |
 |---|---|
 | ![tenantctl command overview](docs/screenshots/01-help.png) | ![generate offline manifest bundle](docs/screenshots/02-generate.png) |
-| `tenantctl --help` — the four-command CLI surface | `tenantctl generate` — the full manifest bundle, rendered offline |
+| `tenantctl --help` — the five-command CLI surface | `tenantctl generate` — the full manifest bundle, rendered offline |
 | ![create onboarding a tenant on a real cluster](docs/screenshots/03-create-and-verify.png) | ![list tenants on the cluster](docs/screenshots/04-list.png) |
 | `tenantctl create` onboarding `acme-corp` on a real `kind` cluster, verified with `kubectl` | `tenantctl list` after onboarding a second tenant |
-| ![real NetworkPolicy isolation proof](docs/screenshots/05-network-isolation.png) | ![delete and safety guards](docs/screenshots/06-delete-and-safety.png) |
-| Live proof against real pod traffic: cross-namespace blocked, same-namespace and DNS allowed | `tenantctl delete`, plus the guard that refuses to delete a namespace it doesn't manage |
-| ![input validation](docs/screenshots/07-validation.png) | |
+| ![real NetworkPolicy isolation proof](docs/screenshots/05-network-isolation.png) | ![update reconciling quota and network allow-list](docs/screenshots/06-update-reconcile.png) |
+| Live proof against real pod traffic: cross-namespace blocked, same-namespace and DNS allowed | `tenantctl update` raising a quota and adding a cross-namespace allow-list to a live tenant |
+| ![diff mode previewing drift](docs/screenshots/07-diff.png) | ![dry-run preview](docs/screenshots/08-dry-run.png) |
+| `tenantctl update --diff` — live cluster state vs. the desired spec, with only the actual drift shown | `tenantctl create --dry-run` — preview the full bundle without touching the cluster |
+| ![GitOps config file](docs/screenshots/09-gitops-file.png) | ![delete and safety guards](docs/screenshots/10-delete-and-safety.png) |
+| `tenantctl generate -f` — a tenant spec driven entirely from a YAML file | `tenantctl delete`, plus the guard that refuses to delete a namespace it doesn't manage |
+| ![input validation](docs/screenshots/11-validation.png) | |
 | Spec validation rejects a bad name or an unparsable resource quantity before touching the cluster | |
 
 ## Quick start
@@ -48,8 +52,12 @@ cluster:
 kind create cluster --name tenant-demo
 ./bin/tenantctl create --name acme-corp --admin-name acme-admins --context kind-tenant-demo
 ./bin/tenantctl list --context kind-tenant-demo
+./bin/tenantctl update --name acme-corp --admin-name acme-admins --cpu-request 3 --context kind-tenant-demo
 ./bin/tenantctl delete --name acme-corp --context kind-tenant-demo
 ```
+
+Or run the same workflow end to end, including a real `kind` cluster
+bring-up, with [`scripts/demo.sh`](scripts/demo.sh).
 
 ## What gets created
 
@@ -64,7 +72,8 @@ Running `create` for a tenant named `acme-corp` applies:
 - **NetworkPolicy** `deny-all`, `allow-same-namespace`, and
   `allow-dns-egress` — ingress and egress are denied by default, then
   explicitly re-allowed for traffic within the namespace and for DNS
-  resolution against `kube-system`
+  resolution against `kube-system`. A fourth policy, `allow-cross-namespace`,
+  is added automatically whenever `--allow-namespace` is set (see below)
 - **Role** `tenant-admin` and **RoleBinding** `tenant-admin-binding`,
   scoping the tenant's admin subject to workload resources (pods,
   deployments, jobs, services, configmaps, secrets, ...) in their own
@@ -94,6 +103,32 @@ error if the tenant's namespace already exists.
 tenantctl create --name acme-corp --admin-name acme-admins [--kubeconfig path] [--context name]
 ```
 
+Add `--dry-run` to print the bundle that would be applied and exit without
+contacting the cluster at all.
+
+### `tenantctl update`
+
+Reconciles an existing tenant's quota, limit range, network policies, and
+RBAC to match the given spec — the same flags (or `--file`) as `create`.
+The tenant's namespace itself is never touched. Network policies are fully
+reconciled: one that's no longer desired (e.g. a removed
+`--allow-namespace`) is deleted, not just left behind. Fails if the tenant
+doesn't exist or isn't `tenantctl`-managed.
+
+```sh
+tenantctl update --name acme-corp --admin-name acme-admins --cpu-request 3 --context kind-tenant-demo
+```
+
+Add `--dry-run` to render the desired bundle without contacting the
+cluster, or `--diff` to fetch the tenant's live state and print a
+line-level diff against the desired spec (lines only in the live cluster
+prefixed `-`, lines only in the desired spec prefixed `+`) without applying
+anything.
+
+```sh
+tenantctl update --name acme-corp --admin-name acme-admins --cpu-request 5 --diff --context kind-tenant-demo
+```
+
 ### `tenantctl delete`
 
 Deletes a tenant's namespace, cascading deletion of everything in it.
@@ -114,12 +149,13 @@ tenantctl list [--kubeconfig path] [--context name]
 
 ### Shared flags
 
-`generate` and `create` both build a tenant spec from these flags (shown
-with their defaults):
+`generate`, `create`, and `update` all build a tenant spec from these flags
+(shown with their defaults):
 
 | Flag | Default | Meaning |
 |---|---|---|
-| `--name` | *(required)* | Tenant name; must be a valid DNS label |
+| `--file`, `-f` | | Load the full spec from a YAML file instead of the flags below (GitOps mode) |
+| `--name` | *(required unless `--file`)* | Tenant name; must be a valid DNS label |
 | `--cpu-request` | `2` | Total CPU requests allowed in the namespace |
 | `--memory-request` | `4Gi` | Total memory requests allowed in the namespace |
 | `--cpu-limit` | `4` | Total CPU limits allowed in the namespace |
@@ -129,25 +165,33 @@ with their defaults):
 | `--default-memory-request` | `128Mi` | Per-container default memory request |
 | `--default-cpu-limit` | `500m` | Per-container default CPU limit |
 | `--default-memory-limit` | `512Mi` | Per-container default memory limit |
+| `--allow-namespace` | | Additional namespace allowed bidirectional NetworkPolicy traffic with this tenant (repeatable), e.g. a shared ingress controller namespace |
 | `--admin-kind` | `Group` | RBAC subject kind: `User`, `Group`, or `ServiceAccount` |
-| `--admin-name` | *(required)* | RBAC subject name bound as tenant admin |
+| `--admin-name` | *(required unless `--file`)* | RBAC subject name bound as tenant admin |
 | `--admin-namespace` | | Required when `--admin-kind=ServiceAccount` |
 
-`create`, `delete`, and `list` additionally accept `--kubeconfig` and
-`--context` to target a specific cluster and context.
+When `--file` is set, the other spec flags above are ignored. See
+[`examples/tenant.yaml`](examples/tenant.yaml) for the file format — its
+keys mirror the flags above (`quota.cpuRequest`, `limitRange.defaultCPULimit`,
+`allowedNamespaces`, `adminSubject.kind`, ...).
+
+`create`, `update`, `delete`, and `list` additionally accept `--kubeconfig`
+and `--context` to target a specific cluster and context.
 
 ## Architecture
 
 `internal/tenant` builds Kubernetes API objects from a plain `Spec` struct
 (no cluster access), and applies them through a thin wrapper over
-`kubernetes.Interface` so the apply/delete/list logic can be tested against
-a fake clientset. `cmd/tenantctl` wires that package to a Cobra CLI. See
-[PROGRESS.md](PROGRESS.md) for the full design rationale and the phased
-build plan.
+`kubernetes.Interface` so the apply/update/delete/list/diff logic can be
+tested against a fake clientset. `cmd/tenantctl` wires that package to a
+Cobra CLI. See [PROGRESS.md](PROGRESS.md) for the full design rationale and
+the phased build plan.
 
 ```
-cmd/tenantctl/     CLI entrypoint and subcommands
-internal/tenant/    Spec validation, manifest builders, YAML rendering, cluster client
+cmd/tenantctl/       CLI entrypoint and subcommands
+internal/tenant/     Spec validation, manifest builders, YAML rendering, cluster client
+examples/            Sample GitOps tenant spec file for `--file`
+scripts/             Local dev helpers: kind cluster bring-up, a full CLI demo, screenshot capture
 docs/screenshots/    Preview images used above
 ```
 
@@ -157,6 +201,13 @@ docs/screenshots/    Preview images used above
 go build ./...
 go vet ./...
 go test ./... -cover
+```
+
+Try the full workflow against a real cluster:
+
+```sh
+./scripts/kind-up.sh        # bring up (or reuse) a local kind cluster
+./scripts/demo.sh           # build tenantctl and run create/list/update/diff/delete against it
 ```
 
 ## Status
