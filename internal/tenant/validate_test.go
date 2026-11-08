@@ -167,6 +167,40 @@ func TestValidate_AdminSubject(t *testing.T) {
 	})
 }
 
+func TestValidate_AllowedNamespaces(t *testing.T) {
+	t.Run("nil list is valid (default isolation)", func(t *testing.T) {
+		s := validSpec()
+		s.AllowedNamespaces = nil
+		if err := Validate(s); err != nil {
+			t.Fatalf("expected nil allowedNamespaces to be valid, got: %v", err)
+		}
+	})
+
+	t.Run("valid entries pass", func(t *testing.T) {
+		s := validSpec()
+		s.AllowedNamespaces = []string{"ingress-nginx", "shared-tools"}
+		if err := Validate(s); err != nil {
+			t.Fatalf("expected valid allowedNamespaces to pass, got: %v", err)
+		}
+	})
+
+	t.Run("invalid entry fails", func(t *testing.T) {
+		s := validSpec()
+		s.AllowedNamespaces = []string{"Not_Valid"}
+		if err := Validate(s); err == nil {
+			t.Fatal("expected error for an invalid entry in allowedNamespaces")
+		}
+	})
+
+	t.Run("one bad entry among good ones still fails", func(t *testing.T) {
+		s := validSpec()
+		s.AllowedNamespaces = []string{"ingress-nginx", "Bad_NS"}
+		if err := Validate(s); err == nil {
+			t.Fatal("expected error when any entry in allowedNamespaces is invalid")
+		}
+	})
+}
+
 func TestDefaultQuota(t *testing.T) {
 	q := DefaultQuota()
 	if q.CPURequest != "2" || q.MemoryRequest != "4Gi" || q.CPULimit != "4" || q.MemoryLimit != "8Gi" || q.MaxPods != "20" {
