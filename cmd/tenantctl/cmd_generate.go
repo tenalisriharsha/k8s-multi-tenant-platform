@@ -20,7 +20,10 @@ func newGenerateCmd() *cobra.Command {
 			"RoleBinding for a tenant as a single multi-document YAML stream. Useful for\n" +
 			"reviewing what `create` would apply, or for piping into `kubectl apply -f -`.",
 		RunE: func(cmd *cobra.Command, args []string) error {
-			spec := flags.toSpec()
+			spec, err := flags.resolveSpec()
+			if err != nil {
+				return err
+			}
 			if err := tenant.Validate(spec); err != nil {
 				return err
 			}
@@ -41,8 +44,6 @@ func newGenerateCmd() *cobra.Command {
 
 	addSpecFlags(cmd, flags)
 	cmd.Flags().StringVar(&output, "output", "", "write YAML to this file instead of stdout")
-	cmd.MarkFlagRequired("name")
-	cmd.MarkFlagRequired("admin-name")
 
 	return cmd
 }

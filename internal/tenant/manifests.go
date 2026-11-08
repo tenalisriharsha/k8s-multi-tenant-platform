@@ -166,7 +166,46 @@ func buildNetworkPolicies(s Spec) []*networkingv1.NetworkPolicy {
 		},
 	}
 
-	return []*networkingv1.NetworkPolicy{denyAll, allowSameNamespace, allowDNSEgress}
+	policies := []*networkingv1.NetworkPolicy{denyAll, allowSameNamespace, allowDNSEgress}
+	if crossNS := buildCrossNamespacePolicy(s); crossNS != nil {
+		policies = append(policies, crossNS)
+	}
+	return policies
+}
+
+// buildCrossNamespacePolicy returns a NetworkPolicy permitting bidirectional
+// traffic between this tenant's namespace and every namespace listed in
+// Spec.AllowedNamespaces (e.g. a shared ingress controller namespace). It
+// returns nil when the tenant declares no allow-listed namespaces, so a
+// tenant with an empty list gets exactly the same three policies as before
+// this feature existed.
+func buildCrossNamespacePolicy(s Spec) *networkingv1.NetworkPolicy {
+	if len(s.AllowedNamespaces) == 0 {
+		return nil
+	}
+
+	peers := make([]networkingv1.NetworkPolicyPeer, 0, len(s.AllowedNamespaces))
+	for _, ns := range s.AllowedNamespaces {
+		peers = append(peers, networkingv1.NetworkPolicyPeer{
+			NamespaceSelector: &metav1.LabelSelector{
+				MatchLabels: map[string]string{"kubernetes.io/metadata.name": ns},
+			},
+		})
+	}
+
+	return &networkingv1.NetworkPolicy{
+		TypeMeta:   metav1.TypeMeta{APIVersion: "networking.k8s.io/v1", Kind: "NetworkPolicy"},
+		ObjectMeta: objectMeta(s, "allow-cross-namespace"),
+		Spec: networkingv1.NetworkPolicySpec{
+			PodSelector: metav1.LabelSelector{},
+			PolicyTypes: []networkingv1.PolicyType{
+				networkingv1.PolicyTypeIngress,
+				networkingv1.PolicyTypeEgress,
+			},
+			Ingress: []networkingv1.NetworkPolicyIngressRule{{From: peers}},
+			Egress:  []networkingv1.NetworkPolicyEgressRule{{To: peers}},
+		},
+	}
 }
 
 // buildRole scopes a tenant admin to workload-related resources in their

@@ -48,6 +48,12 @@ func Validate(s Spec) error {
 		return err
 	}
 
+	for _, ns := range s.AllowedNamespaces {
+		if !nameRE.MatchString(ns) {
+			return fmt.Errorf("invalid entry %q in allowedNamespaces: must match %s (lowercase alphanumeric and '-', max 63 chars)", ns, nameRE.String())
+		}
+	}
+
 	switch s.AdminSubject.Kind {
 	case SubjectKindUser, SubjectKindGroup, SubjectKindServiceAccount:
 	default:
