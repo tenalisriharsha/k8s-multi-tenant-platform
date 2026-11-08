@@ -15,7 +15,8 @@ no external policy engine:
 - Per-tenant **RBAC** (`Role` + `RoleBinding`) scoping a tenant admin subject
   to their own namespace
 - A **CLI** (`tenantctl`) that generates and applies this entire bundle for a
-  new tenant in one command, and can list/delete tenants cleanly
+  new tenant in one command, can reconcile an existing tenant to a changed
+  spec, and can list/delete tenants cleanly
 
 The goal is a reference an engineer can point to and say "this is how I'd
 bootstrap tenant isolation on a shared cluster," backed by real, runnable
@@ -30,9 +31,14 @@ k8s-multi-tenant-platform/
     types.go              TenantSpec: the declarative shape of a tenant
     validate.go           Validation rules for TenantSpec
     manifests.go          Pure builder functions: TenantSpec -> typed k8s API objects
-    render.go             Marshal built objects to YAML (for `generate`)
-    client.go             Thin wrapper over kubernetes.Interface: Create/Delete/List tenants
-  scripts/                Local dev helpers (kind cluster bring-up, demo run, screenshot capture)
+    render.go             Marshal built objects to YAML (for `generate`), plus the
+                           line-level diff used by `update --diff`
+    client.go             Thin wrapper over kubernetes.Interface: Create/Update/Delete/
+                           List/Diff tenants
+    file.go              LoadSpecFile: read a TenantSpec from a YAML file (GitOps mode)
+  examples/               Sample GitOps tenant spec file for `--file`
+  scripts/                Local dev helpers: kind-up.sh (cluster bring-up), demo.sh (full
+                          CLI workflow), capture_screenshots.py (regenerates docs/screenshots)
   docs/screenshots/       Preview images embedded in README.md
 ```
 
@@ -56,6 +62,18 @@ Design choices:
   carries `tenant-platform.io/tenant=<name>` and
   `tenant-platform.io/managed-by=tenantctl`, so `list` and `delete` work by
   selector rather than by guessing namespace names.
+- **`update` reconciles rather than patches.** `UpdateTenant` always builds
+  the full desired `Bundle` from a `Spec` (same as `create`) and makes the
+  live cluster match it exactly, including deleting a NetworkPolicy that's
+  no longer in the desired set (e.g. a removed `--allow-namespace`). This
+  keeps "what's on the cluster" always explainable by "what's in the spec,"
+  rather than accumulating drift from partial, field-by-field patches.
+- **`--diff` strips API server bookkeeping before comparing.** A live
+  object's `resourceVersion`, `uid`, `managedFields`, `creationTimestamp`,
+  and a freshly-built object's `apiVersion`/`kind` (which a typed client-go
+  `Get` never populates) are noise that would appear in every diff whether
+  or not anything actually changed. `DiffTenant` strips both before
+  rendering, so the output is only the fields that actually drifted.
 
 ## Phased build plan
 
@@ -72,16 +90,38 @@ Design choices:
   - [x] End-to-end smoke test against a real local `kind` cluster
   - [x] README with quick start, preview screenshots, and docs
 
-- [ ] **Phase 2 — Policy depth & safety** (Night 2)
-  - [ ] Cross-namespace allow-list support (e.g. shared ingress controller namespace)
-  - [ ] `tenantctl update` to reconcile quota/limit changes on an existing tenant
-  - [ ] Dry-run / diff mode (`--dry-run=server`, `--diff`)
-  - [ ] Config-file driven tenant specs (`tenantctl create -f tenant.yaml`) for GitOps use
-  - [ ] Admission-time safety checks (block delete of non-`tenantctl`-managed namespaces)
+- [x] **Phase 2 — Policy depth & safety** (Night 2)
+  - [x] Cross-namespace allow-list support (`Spec.AllowedNamespaces`,
+        `--allow-namespace`, an `allow-cross-namespace` NetworkPolicy built
+        only when the list is non-empty, so a tenant with no allow-list
+        gets byte-identical output to before this feature existed)
+  - [x] `tenantctl update` to reconcile quota/limit/network-policy/RBAC
+        changes on an existing tenant (`Client.UpdateTenant`,
+        `reconcileNetworkPolicies`)
+  - [x] Dry-run / diff mode: `--dry-run` on `create`/`update` (renders the
+        bundle, never contacts the cluster) and `--diff` on `update`
+        (`Client.DiffTenant`, a line-level diff against live cluster state)
+  - [x] Config-file driven tenant specs: `--file`/`-f` on
+        `generate`/`create`/`update` (`tenant.LoadSpecFile`), see
+        [`examples/tenant.yaml`](examples/tenant.yaml)
+  - [x] Admission-time safety checks: `DeleteTenant` and `UpdateTenant` both
+        refuse to act on a namespace that isn't labeled
+        `tenant-platform.io/managed-by=tenantctl` (the `DeleteTenant` guard
+        shipped in Phase 1; `UpdateTenant` adds the same guard)
+  - [x] `scripts/kind-up.sh`, `scripts/demo.sh`, and
+        `scripts/capture_screenshots.py` added (previously referenced in
+        this file's architecture section but missing from the repo)
+  - [x] Unit tests, `go vet`, `gofmt -l .` all pass; every Phase 2 command
+        exercised for real against a local `kind` cluster, including
+        `update --diff` showing real drift and `update` deleting a
+        NetworkPolicy that was removed from the desired spec
+  - [x] README and preview screenshots updated for all Phase 2 commands
 
 - [ ] **Phase 3 — Multi-tenant fleet view** (Night 3)
   - [ ] `tenantctl status` reporting live quota usage vs. limits per tenant
-  - [ ] Drift detection between declared spec and live cluster state
+        (note: `update --diff` already gives spec-vs-live drift for a single
+        tenant; `status` should focus on usage numbers, not object diffing)
+  - [ ] `tenantctl list` enhancement: show quota utilization per tenant
   - [ ] Optional Helm chart packaging of the same primitives
 
 - [ ] **Phase 4 — Hardening & polish** (Night 4+)
@@ -91,11 +131,19 @@ Design choices:
 
 ## Resume point for next session
 
-Phase 1 is complete: scaffold, manifest generation, client-go wrapper, CLI,
-unit tests (passing), and a real `kind` cluster smoke test all exist and
-work. Start Phase 2 by reading `internal/tenant/manifests.go` and adding the
-cross-namespace allow-list to `buildNetworkPolicies` first — the `create`/
-`update` split in the CLI depends on that shape being settled before the
-GitOps config-file flag is added.
+Phase 1 and Phase 2 are both complete. The CLI now has five commands
+(`generate`, `create`, `update`, `delete`, `list`), cross-namespace
+NetworkPolicy allow-listing, `--dry-run`/`--diff` modes, and GitOps
+config-file specs via `--file`. Everything in Phase 2 was exercised for
+real against a local `kind` cluster, not just the fake clientset.
+
+Start Phase 3 by reading `cmd/tenantctl/cmd_list.go` and
+`internal/tenant/client.go`'s `ListTenants`/`Info` — `tenantctl status` will
+need per-tenant quota usage, which means fetching each managed namespace's
+`ResourceQuota.Status.Used` (already present on the live object; `Info`
+currently only carries `Name`/`Phase`/`CreatedAt`, so it'll need a new
+field or a separate `Usage` type). Keep `status` read-only and separate
+from `update --diff`, which already covers full-bundle drift detection —
+`status` is specifically about quota numbers, not another diff mode.
 
 STATUS: IN_PROGRESS
