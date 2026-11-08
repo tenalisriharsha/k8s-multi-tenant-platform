@@ -129,9 +129,9 @@ func TestGenerate_DefaultsMatchDocumentedValues(t *testing.T) {
 	}
 }
 
-func TestRootCmd_HasAllFourSubcommands(t *testing.T) {
+func TestRootCmd_HasAllFiveSubcommands(t *testing.T) {
 	root := newRootCmd()
-	want := map[string]bool{"generate": false, "create": false, "delete": false, "list": false}
+	want := map[string]bool{"generate": false, "create": false, "update": false, "delete": false, "list": false}
 	for _, c := range root.Commands() {
 		if _, ok := want[c.Name()]; ok {
 			want[c.Name()] = true
@@ -141,6 +141,141 @@ func TestRootCmd_HasAllFourSubcommands(t *testing.T) {
 		if !found {
 			t.Errorf("root command missing subcommand %q", name)
 		}
+	}
+}
+
+func TestGenerate_AllowNamespaceFlagAddsCrossNamespacePolicy(t *testing.T) {
+	out, err := runCmd(t, newGenerateCmd(),
+		"--name", "acme-corp", "--admin-name", "acme-admins",
+		"--allow-namespace", "ingress-nginx", "--allow-namespace", "shared-tools")
+	if err != nil {
+		t.Fatalf("generate failed: %v", err)
+	}
+	if !strings.Contains(out, "allow-cross-namespace") {
+		t.Errorf("expected --allow-namespace to produce an allow-cross-namespace policy, got:\n%s", out)
+	}
+	if !strings.Contains(out, "ingress-nginx") || !strings.Contains(out, "shared-tools") {
+		t.Errorf("expected both allow-listed namespaces to appear in the rendered bundle, got:\n%s", out)
+	}
+}
+
+func TestGenerate_NoAllowNamespaceOmitsCrossNamespacePolicy(t *testing.T) {
+	out, err := runCmd(t, newGenerateCmd(), "--name", "acme-corp", "--admin-name", "acme-admins")
+	if err != nil {
+		t.Fatalf("generate failed: %v", err)
+	}
+	if strings.Contains(out, "allow-cross-namespace") {
+		t.Errorf("expected no allow-cross-namespace policy without --allow-namespace, got:\n%s", out)
+	}
+}
+
+func TestGenerate_FileFlagLoadsSpecFromYAML(t *testing.T) {
+	dir := t.TempDir()
+	path := filepath.Join(dir, "tenant.yaml")
+	const data = `
+name: file-corp
+quota: {cpuRequest: "2", memoryRequest: 4Gi, cpuLimit: "4", memoryLimit: 8Gi, maxPods: "20"}
+limitRange: {defaultCPURequest: 100m, defaultMemoryRequest: 128Mi, defaultCPULimit: 500m, defaultMemoryLimit: 512Mi}
+adminSubject: {kind: Group, name: file-admins}
+`
+	if err := os.WriteFile(path, []byte(data), 0o600); err != nil {
+		t.Fatalf("write spec file: %v", err)
+	}
+
+	// --file alone, with no --name/--admin-name at all, must be enough.
+	out, err := runCmd(t, newGenerateCmd(), "--file", path)
+	if err != nil {
+		t.Fatalf("generate --file failed: %v", err)
+	}
+	if !strings.Contains(out, "file-corp") {
+		t.Errorf("expected rendered bundle to mention the tenant name from the file, got:\n%s", out)
+	}
+}
+
+func TestGenerate_ExampleFileFromREADMEWorks(t *testing.T) {
+	// examples/tenant.yaml is the exact file README.md and PROGRESS.md point
+	// readers at for --file/-f; confirm it actually works through the CLI,
+	// not just through tenant.LoadSpecFile directly.
+	out, err := runCmd(t, newGenerateCmd(), "-f", filepath.Join("..", "..", "examples", "tenant.yaml"))
+	if err != nil {
+		t.Fatalf("generate -f examples/tenant.yaml failed: %v", err)
+	}
+	if !strings.Contains(out, "acme-corp") {
+		t.Errorf("expected rendered bundle to mention acme-corp, got:\n%s", out)
+	}
+	if !strings.Contains(out, "kind: NetworkPolicy") {
+		t.Errorf("expected rendered bundle to include network policies, got:\n%s", out)
+	}
+}
+
+func TestUpdate_RequiresNameAndAdminNameWithoutFile(t *testing.T) {
+	_, err := runCmd(t, newUpdateCmd(), "--kubeconfig", unreachableKubeconfig(t))
+	if err == nil {
+		t.Fatal("expected an error when --name/--admin-name are not set and --file is not used")
+	}
+}
+
+func TestUpdate_FailsFastOnBadKubeconfig(t *testing.T) {
+	_, err := runCmd(t, newUpdateCmd(),
+		"--name", "acme-corp", "--admin-name", "acme-admins",
+		"--kubeconfig", unreachableKubeconfig(t))
+	if err == nil {
+		t.Fatal("expected an error when the kubeconfig path does not exist")
+	}
+}
+
+func TestUpdate_ValidatesSpecBeforeTouchingCluster(t *testing.T) {
+	_, err := runCmd(t, newUpdateCmd(),
+		"--name", "Not_Valid", "--admin-name", "acme-admins",
+		"--kubeconfig", unreachableKubeconfig(t))
+	if err == nil {
+		t.Fatal("expected a validation error for an invalid tenant name")
+	}
+	if strings.Contains(err.Error(), "kubeconfig") {
+		t.Errorf("expected validation to fail before the kubeconfig is even loaded, got: %v", err)
+	}
+}
+
+func TestUpdate_DryRunNeverContactsCluster(t *testing.T) {
+	// --dry-run must render and exit before newClientset is ever called, so
+	// an unreachable kubeconfig must not cause this to fail.
+	out, err := runCmd(t, newUpdateCmd(),
+		"--name", "acme-corp", "--admin-name", "acme-admins",
+		"--dry-run", "--kubeconfig", unreachableKubeconfig(t))
+	if err != nil {
+		t.Fatalf("update --dry-run should succeed without contacting a cluster, got: %v", err)
+	}
+	if !strings.Contains(out, "dry run") {
+		t.Errorf("expected a dry-run marker in output, got:\n%s", out)
+	}
+	if !strings.Contains(out, "kind: ResourceQuota") {
+		t.Errorf("expected the rendered bundle in dry-run output, got:\n%s", out)
+	}
+}
+
+func TestUpdate_DiffRequiresCluster(t *testing.T) {
+	// Unlike --dry-run, --diff must fetch live state, so it should fail the
+	// same way as a normal update when the cluster can't be reached.
+	_, err := runCmd(t, newUpdateCmd(),
+		"--name", "acme-corp", "--admin-name", "acme-admins",
+		"--diff", "--kubeconfig", unreachableKubeconfig(t))
+	if err == nil {
+		t.Fatal("expected --diff to fail when the kubeconfig cannot be loaded, since it must contact the cluster")
+	}
+}
+
+func TestCreate_DryRunNeverContactsCluster(t *testing.T) {
+	out, err := runCmd(t, newCreateCmd(),
+		"--name", "acme-corp", "--admin-name", "acme-admins",
+		"--dry-run", "--kubeconfig", unreachableKubeconfig(t))
+	if err != nil {
+		t.Fatalf("create --dry-run should succeed without contacting a cluster, got: %v", err)
+	}
+	if !strings.Contains(out, "dry run") {
+		t.Errorf("expected a dry-run marker in output, got:\n%s", out)
+	}
+	if !strings.Contains(out, "kind: Namespace") {
+		t.Errorf("expected the rendered bundle in dry-run output, got:\n%s", out)
 	}
 }
 

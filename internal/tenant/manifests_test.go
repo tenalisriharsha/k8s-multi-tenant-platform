@@ -207,6 +207,80 @@ func TestBuild_NetworkPolicies(t *testing.T) {
 	})
 }
 
+func TestBuild_NetworkPolicies_CrossNamespaceAllowList(t *testing.T) {
+	s := validSpec()
+	s.AllowedNamespaces = []string{"ingress-nginx", "shared-tools"}
+	b := Build(s)
+
+	if len(b.NetworkPolicies) != 4 {
+		t.Fatalf("expected 4 network policies when AllowedNamespaces is set, got %d", len(b.NetworkPolicies))
+	}
+
+	np := findPolicy(b.NetworkPolicies, "allow-cross-namespace")
+	if np == nil {
+		t.Fatal("allow-cross-namespace policy not found")
+	}
+	if np.Namespace != s.Name {
+		t.Errorf("allow-cross-namespace namespace = %q, want %q", np.Namespace, s.Name)
+	}
+	if np.Labels[TenantLabelKey] != s.Name {
+		t.Errorf("allow-cross-namespace missing tenant label")
+	}
+	if len(np.Spec.PolicyTypes) != 2 {
+		t.Fatalf("allow-cross-namespace should cover both ingress and egress, got %v", np.Spec.PolicyTypes)
+	}
+
+	if len(np.Spec.Ingress) != 1 || len(np.Spec.Ingress[0].From) != 2 {
+		t.Fatalf("expected ingress from both allowed namespaces, got %+v", np.Spec.Ingress)
+	}
+	if len(np.Spec.Egress) != 1 || len(np.Spec.Egress[0].To) != 2 {
+		t.Fatalf("expected egress to both allowed namespaces, got %+v", np.Spec.Egress)
+	}
+
+	wantNames := map[string]bool{"ingress-nginx": true, "shared-tools": true}
+	for _, peer := range np.Spec.Ingress[0].From {
+		if peer.NamespaceSelector == nil {
+			t.Fatalf("ingress peer missing namespace selector: %+v", peer)
+		}
+		name := peer.NamespaceSelector.MatchLabels["kubernetes.io/metadata.name"]
+		if !wantNames[name] {
+			t.Errorf("unexpected ingress peer namespace %q", name)
+		}
+		delete(wantNames, name)
+	}
+	if len(wantNames) != 0 {
+		t.Errorf("missing expected ingress peers: %v", wantNames)
+	}
+
+	egressNames := map[string]bool{"ingress-nginx": true, "shared-tools": true}
+	for _, peer := range np.Spec.Egress[0].To {
+		if peer.NamespaceSelector == nil {
+			t.Fatalf("egress peer missing namespace selector: %+v", peer)
+		}
+		name := peer.NamespaceSelector.MatchLabels["kubernetes.io/metadata.name"]
+		if !egressNames[name] {
+			t.Errorf("unexpected egress peer namespace %q", name)
+		}
+		delete(egressNames, name)
+	}
+	if len(egressNames) != 0 {
+		t.Errorf("missing expected egress peers: %v", egressNames)
+	}
+}
+
+func TestBuild_NetworkPolicies_EmptyAllowedNamespacesOmitsCrossNamespacePolicy(t *testing.T) {
+	s := validSpec()
+	s.AllowedNamespaces = []string{}
+	b := Build(s)
+
+	if len(b.NetworkPolicies) != 3 {
+		t.Fatalf("expected exactly 3 network policies with an empty AllowedNamespaces, got %d", len(b.NetworkPolicies))
+	}
+	if findPolicy(b.NetworkPolicies, "allow-cross-namespace") != nil {
+		t.Error("allow-cross-namespace policy should not be built when AllowedNamespaces is empty")
+	}
+}
+
 func TestBuild_Role_ExcludesIsolationResources(t *testing.T) {
 	s := validSpec()
 	b := Build(s)
