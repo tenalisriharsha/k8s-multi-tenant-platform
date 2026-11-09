@@ -6,6 +6,7 @@ import (
 	"testing"
 
 	corev1 "k8s.io/api/core/v1"
+	"k8s.io/apimachinery/pkg/api/resource"
 	metav1 "k8s.io/apimachinery/pkg/apis/meta/v1"
 	"k8s.io/client-go/kubernetes/fake"
 )
@@ -400,6 +401,222 @@ func TestDiffTenant_RefusesUnmanagedNamespace(t *testing.T) {
 	}
 	if !strings.Contains(err.Error(), "not managed by tenantctl") {
 		t.Errorf("expected a 'not managed by tenantctl' error, got: %v", err)
+	}
+}
+
+func TestResourceUsage_Percent(t *testing.T) {
+	cases := []struct {
+		name string
+		used string
+		hard string
+		want int
+	}{
+		{"half used", "1", "2", 50},
+		{"zero hard avoids divide by zero", "1", "0", 0},
+		{"used equals hard", "4Gi", "4Gi", 100},
+		{"zero used", "0", "4", 0},
+		{"rounds down", "1", "3", 33},
+	}
+	for _, c := range cases {
+		t.Run(c.name, func(t *testing.T) {
+			u := ResourceUsage{
+				Used: resource.MustParse(c.used),
+				Hard: resource.MustParse(c.hard),
+			}
+			if got := u.Percent(); got != c.want {
+				t.Errorf("Percent() with used=%s hard=%s = %d, want %d", c.used, c.hard, got, c.want)
+			}
+		})
+	}
+}
+
+// setQuotaStatus fetches ns's tenant-quota ResourceQuota and overwrites its
+// Status to simulate what Kubernetes' own quota controller would compute,
+// since the fake clientset (unlike a real cluster) never fills this in on
+// its own.
+func setQuotaStatus(t *testing.T, kube *fake.Clientset, ns string, hard, used corev1.ResourceList) {
+	t.Helper()
+	ctx := context.Background()
+	rq, err := kube.CoreV1().ResourceQuotas(ns).Get(ctx, "tenant-quota", metav1.GetOptions{})
+	if err != nil {
+		t.Fatalf("get resource quota to seed status: %v", err)
+	}
+	rq.Status = corev1.ResourceQuotaStatus{Hard: hard, Used: used}
+	if _, err := kube.CoreV1().ResourceQuotas(ns).Update(ctx, rq, metav1.UpdateOptions{}); err != nil {
+		t.Fatalf("seed resource quota status: %v", err)
+	}
+}
+
+func TestGetTenant_ReturnsUsageFromResourceQuotaStatus(t *testing.T) {
+	ctx := context.Background()
+	spec := validSpec()
+	spec.Name = "status-corp"
+
+	kube := fake.NewSimpleClientset()
+	client := NewClient(kube)
+	if err := client.CreateTenant(ctx, Build(spec)); err != nil {
+		t.Fatalf("CreateTenant: %v", err)
+	}
+
+	setQuotaStatus(t, kube, spec.Name,
+		corev1.ResourceList{
+			corev1.ResourceRequestsCPU: resource.MustParse("2"),
+			corev1.ResourcePods:        resource.MustParse("20"),
+		},
+		corev1.ResourceList{
+			corev1.ResourceRequestsCPU: resource.MustParse("1"),
+			corev1.ResourcePods:        resource.MustParse("5"),
+		},
+	)
+
+	info, err := client.GetTenant(ctx, spec.Name)
+	if err != nil {
+		t.Fatalf("GetTenant: %v", err)
+	}
+	if info.Name != spec.Name {
+		t.Errorf("Info.Name = %q, want %q", info.Name, spec.Name)
+	}
+	if len(info.Usage) != 2 {
+		t.Fatalf("expected usage for exactly the 2 hard-limited resources, got %+v", info.Usage)
+	}
+	byResource := make(map[corev1.ResourceName]ResourceUsage, len(info.Usage))
+	for _, u := range info.Usage {
+		byResource[u.Resource] = u
+	}
+	if u := byResource[corev1.ResourceRequestsCPU]; u.Percent() != 50 {
+		t.Errorf("requests.cpu usage = %+v, want 50%%", u)
+	}
+	if u := byResource[corev1.ResourcePods]; u.Percent() != 25 {
+		t.Errorf("pods usage = %+v, want 25%%", u)
+	}
+}
+
+func TestGetTenant_NotFound(t *testing.T) {
+	ctx := context.Background()
+	kube := fake.NewSimpleClientset()
+	client := NewClient(kube)
+
+	_, err := client.GetTenant(ctx, "ghost-tenant")
+	if err == nil {
+		t.Fatal("expected error getting a tenant that does not exist")
+	}
+	if !strings.Contains(err.Error(), "not found") {
+		t.Errorf("expected a 'not found' error, got: %v", err)
+	}
+}
+
+func TestGetTenant_RefusesUnmanagedNamespace(t *testing.T) {
+	ctx := context.Background()
+	kube := fake.NewSimpleClientset()
+	client := NewClient(kube)
+
+	if _, err := kube.CoreV1().Namespaces().Create(ctx, &corev1.Namespace{
+		ObjectMeta: metav1.ObjectMeta{Name: "someones-namespace"},
+	}, metav1.CreateOptions{}); err != nil {
+		t.Fatalf("seed namespace: %v", err)
+	}
+
+	_, err := client.GetTenant(ctx, "someones-namespace")
+	if err == nil {
+		t.Fatal("expected GetTenant to refuse an unmanaged namespace")
+	}
+	if !strings.Contains(err.Error(), "not managed by tenantctl") {
+		t.Errorf("expected a 'not managed by tenantctl' error, got: %v", err)
+	}
+}
+
+// TestGetTenant_NoQuotaYetReturnsNilUsageNotError pins down the documented
+// behavior (PROGRESS.md: "a missing ResourceQuota ... is treated as 'no
+// usage data yet,' not an error") for a managed namespace whose
+// ResourceQuota hasn't been created yet, e.g. mid-creation.
+func TestGetTenant_NoQuotaYetReturnsNilUsageNotError(t *testing.T) {
+	ctx := context.Background()
+	kube := fake.NewSimpleClientset()
+	client := NewClient(kube)
+
+	if _, err := kube.CoreV1().Namespaces().Create(ctx, &corev1.Namespace{
+		ObjectMeta: metav1.ObjectMeta{
+			Name:   "half-created-corp",
+			Labels: map[string]string{TenantLabelKey: "half-created-corp", TenantManagedByKey: ManagedByValue},
+		},
+	}, metav1.CreateOptions{}); err != nil {
+		t.Fatalf("seed namespace: %v", err)
+	}
+
+	info, err := client.GetTenant(ctx, "half-created-corp")
+	if err != nil {
+		t.Fatalf("GetTenant should not error when the ResourceQuota doesn't exist yet: %v", err)
+	}
+	if info.Usage != nil {
+		t.Errorf("expected nil Usage when no ResourceQuota exists, got %+v", info.Usage)
+	}
+}
+
+func TestListTenants_IncludesUsagePerTenant(t *testing.T) {
+	ctx := context.Background()
+	kube := fake.NewSimpleClientset()
+	client := NewClient(kube)
+
+	spec := validSpec()
+	spec.Name = "list-usage-corp"
+	if err := client.CreateTenant(ctx, Build(spec)); err != nil {
+		t.Fatalf("CreateTenant: %v", err)
+	}
+	setQuotaStatus(t, kube, spec.Name,
+		corev1.ResourceList{corev1.ResourceRequestsCPU: resource.MustParse("2")},
+		corev1.ResourceList{corev1.ResourceRequestsCPU: resource.MustParse("1")},
+	)
+
+	tenants, err := client.ListTenants(ctx)
+	if err != nil {
+		t.Fatalf("ListTenants: %v", err)
+	}
+	if len(tenants) != 1 {
+		t.Fatalf("expected a single tenant, got %+v", tenants)
+	}
+	if len(tenants[0].Usage) != 1 || tenants[0].Usage[0].Percent() != 50 {
+		t.Errorf("expected ListTenants to include live usage (50%%), got %+v", tenants[0].Usage)
+	}
+}
+
+// TestListTenants_MissingQuotaForOneTenantDoesNotFailList pins down the
+// documented behavior: a tenant whose ResourceQuota is briefly missing
+// (e.g. still being created) must not fail list/status for every other
+// tenant.
+func TestListTenants_MissingQuotaForOneTenantDoesNotFailList(t *testing.T) {
+	ctx := context.Background()
+	kube := fake.NewSimpleClientset()
+	client := NewClient(kube)
+
+	ready := validSpec()
+	ready.Name = "ready-corp"
+	if err := client.CreateTenant(ctx, Build(ready)); err != nil {
+		t.Fatalf("CreateTenant(ready): %v", err)
+	}
+
+	gapped := validSpec()
+	gapped.Name = "gapped-corp"
+	if err := client.CreateTenant(ctx, Build(gapped)); err != nil {
+		t.Fatalf("CreateTenant(gapped): %v", err)
+	}
+	if err := kube.CoreV1().ResourceQuotas(gapped.Name).Delete(ctx, "tenant-quota", metav1.DeleteOptions{}); err != nil {
+		t.Fatalf("delete resource quota to simulate a mid-creation gap: %v", err)
+	}
+
+	tenants, err := client.ListTenants(ctx)
+	if err != nil {
+		t.Fatalf("ListTenants should succeed even when one tenant's quota is missing: %v", err)
+	}
+	if len(tenants) != 2 {
+		t.Fatalf("expected both tenants to still be listed, got %+v", tenants)
+	}
+
+	byName := make(map[string]Info, len(tenants))
+	for _, info := range tenants {
+		byName[info.Name] = info
+	}
+	if byName["gapped-corp"].Usage != nil {
+		t.Errorf("expected nil usage for the tenant with no ResourceQuota, got %+v", byName["gapped-corp"].Usage)
 	}
 }
 
