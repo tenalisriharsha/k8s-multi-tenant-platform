@@ -11,6 +11,7 @@ import (
 	corev1 "k8s.io/api/core/v1"
 	networkingv1 "k8s.io/api/networking/v1"
 	apierrors "k8s.io/apimachinery/pkg/api/errors"
+	"k8s.io/apimachinery/pkg/api/resource"
 	metav1 "k8s.io/apimachinery/pkg/apis/meta/v1"
 	"k8s.io/client-go/kubernetes"
 	sigsyaml "sigs.k8s.io/yaml"
@@ -37,6 +38,70 @@ type Info struct {
 	Name      string
 	Phase     string
 	CreatedAt time.Time
+	// Usage is the tenant's live ResourceQuota usage, one entry per
+	// quota-managed resource. It is nil if the tenant's ResourceQuota
+	// object could not be found (e.g. the namespace is still being
+	// created or torn down).
+	Usage []ResourceUsage
+}
+
+// ResourceUsage reports a tenant's observed consumption of one
+// quota-managed resource against the hard limit from its ResourceQuota.
+type ResourceUsage struct {
+	Resource corev1.ResourceName
+	Used     resource.Quantity
+	Hard     resource.Quantity
+}
+
+// Percent returns Used as an integer percentage of Hard, rounded down. It
+// returns 0 when Hard is zero rather than dividing by zero.
+func (u ResourceUsage) Percent() int {
+	hardMilli := u.Hard.MilliValue()
+	if hardMilli == 0 {
+		return 0
+	}
+	return int(u.Used.MilliValue() * 100 / hardMilli)
+}
+
+// quotaResourceOrder fixes the display order of a tenant's quota resources,
+// matching the order buildResourceQuota sets them in.
+var quotaResourceOrder = []corev1.ResourceName{
+	corev1.ResourceRequestsCPU,
+	corev1.ResourceRequestsMemory,
+	corev1.ResourceLimitsCPU,
+	corev1.ResourceLimitsMemory,
+	corev1.ResourcePods,
+}
+
+// usageFromQuota extracts a ResourceUsage per hard-limited resource from a
+// live ResourceQuota's Status, in quotaResourceOrder.
+func usageFromQuota(rq *corev1.ResourceQuota) []ResourceUsage {
+	usage := make([]ResourceUsage, 0, len(quotaResourceOrder))
+	for _, name := range quotaResourceOrder {
+		hard, ok := rq.Status.Hard[name]
+		if !ok {
+			continue
+		}
+		usage = append(usage, ResourceUsage{
+			Resource: name,
+			Used:     rq.Status.Used[name],
+			Hard:     hard,
+		})
+	}
+	return usage
+}
+
+// tenantUsage fetches ns's ResourceQuota and returns its usage, or nil
+// (without error) if the ResourceQuota does not exist yet.
+func (c *Client) tenantUsage(ctx context.Context, ns string) ([]ResourceUsage, error) {
+	rq, err := c.kube.CoreV1().ResourceQuotas(ns).Get(ctx, ResourceQuotaName, metav1.GetOptions{})
+	if err != nil {
+		if apierrors.IsNotFound(err) {
+			return nil, nil
+		}
+		return nil, fmt.Errorf("get resource quota: %w", err)
+	}
+	return usageFromQuota(rq), nil
 }
 
 // CreateTenant applies every object in the Bundle. It fails if the
@@ -340,7 +405,8 @@ func (c *Client) DeleteTenant(ctx context.Context, name string) error {
 	return nil
 }
 
-// ListTenants returns every tenantctl-managed namespace.
+// ListTenants returns every tenantctl-managed namespace, including each
+// tenant's live ResourceQuota usage.
 func (c *Client) ListTenants(ctx context.Context) ([]Info, error) {
 	list, err := c.kube.CoreV1().Namespaces().List(ctx, metav1.ListOptions{
 		LabelSelector: managedBySelector,
@@ -351,11 +417,43 @@ func (c *Client) ListTenants(ctx context.Context) ([]Info, error) {
 
 	infos := make([]Info, 0, len(list.Items))
 	for _, ns := range list.Items {
+		usage, err := c.tenantUsage(ctx, ns.Name)
+		if err != nil {
+			return nil, fmt.Errorf("tenant %q: %w", ns.Name, err)
+		}
 		infos = append(infos, Info{
 			Name:      ns.Labels[TenantLabelKey],
 			Phase:     string(ns.Status.Phase),
 			CreatedAt: ns.CreationTimestamp.Time,
+			Usage:     usage,
 		})
 	}
 	return infos, nil
+}
+
+// GetTenant returns Info, including live ResourceQuota usage, for a single
+// tenantctl-managed tenant. It fails if the tenant does not exist or is not
+// tenantctl-managed, for the same reason DeleteTenant does.
+func (c *Client) GetTenant(ctx context.Context, name string) (Info, error) {
+	nsObj, err := c.kube.CoreV1().Namespaces().Get(ctx, name, metav1.GetOptions{})
+	if err != nil {
+		if apierrors.IsNotFound(err) {
+			return Info{}, fmt.Errorf("tenant %q not found", name)
+		}
+		return Info{}, fmt.Errorf("get namespace: %w", err)
+	}
+	if nsObj.Labels[TenantManagedByKey] != ManagedByValue {
+		return Info{}, fmt.Errorf("namespace %q is not managed by tenantctl", name)
+	}
+
+	usage, err := c.tenantUsage(ctx, name)
+	if err != nil {
+		return Info{}, err
+	}
+	return Info{
+		Name:      nsObj.Labels[TenantLabelKey],
+		Phase:     string(nsObj.Status.Phase),
+		CreatedAt: nsObj.CreationTimestamp.Time,
+		Usage:     usage,
+	}, nil
 }

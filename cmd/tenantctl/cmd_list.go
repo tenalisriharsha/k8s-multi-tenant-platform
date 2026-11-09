@@ -33,9 +33,9 @@ func newListCmd() *cobra.Command {
 			}
 
 			w := tabwriter.NewWriter(cmd.OutOrStdout(), 0, 0, 2, ' ', 0)
-			fmt.Fprintln(w, "NAME\tPHASE\tCREATED")
+			fmt.Fprintln(w, "NAME\tPHASE\tCREATED\tQUOTA")
 			for _, t := range tenants {
-				fmt.Fprintf(w, "%s\t%s\t%s\n", t.Name, t.Phase, t.CreatedAt.Format("2006-01-02T15:04:05Z07:00"))
+				fmt.Fprintf(w, "%s\t%s\t%s\t%s\n", t.Name, t.Phase, t.CreatedAt.Format("2006-01-02T15:04:05Z07:00"), peakUtilization(t.Usage))
 			}
 			return w.Flush()
 		},
@@ -43,4 +43,21 @@ func newListCmd() *cobra.Command {
 
 	addClusterFlags(cmd, clusterFl)
 	return cmd
+}
+
+// peakUtilization summarizes a tenant's quota usage as its single
+// most-utilized resource, e.g. "memory 72%". Full per-resource usage is
+// available via `tenantctl status`. Returns "-" when no quota data is
+// available (e.g. the namespace is still being created).
+func peakUtilization(usage []tenant.ResourceUsage) string {
+	if len(usage) == 0 {
+		return "-"
+	}
+	peak := usage[0]
+	for _, u := range usage[1:] {
+		if u.Percent() > peak.Percent() {
+			peak = u
+		}
+	}
+	return fmt.Sprintf("%s %d%%", peak.Resource, peak.Percent())
 }
