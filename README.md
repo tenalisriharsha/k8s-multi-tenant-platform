@@ -20,17 +20,17 @@ those details so it can be read end to end or dropped into a real cluster.
 | | |
 |---|---|
 | ![tenantctl command overview](docs/screenshots/01-help.png) | ![generate offline manifest bundle](docs/screenshots/02-generate.png) |
-| `tenantctl --help` — the five-command CLI surface | `tenantctl generate` — the full manifest bundle, rendered offline |
-| ![create onboarding a tenant on a real cluster](docs/screenshots/03-create-and-verify.png) | ![list tenants on the cluster](docs/screenshots/04-list.png) |
-| `tenantctl create` onboarding `acme-corp` on a real `kind` cluster, verified with `kubectl` | `tenantctl list` after onboarding a second tenant |
-| ![real NetworkPolicy isolation proof](docs/screenshots/05-network-isolation.png) | ![update reconciling quota and network allow-list](docs/screenshots/06-update-reconcile.png) |
-| Live proof against real pod traffic: cross-namespace blocked, same-namespace and DNS allowed | `tenantctl update` raising a quota and adding a cross-namespace allow-list to a live tenant |
-| ![diff mode previewing drift](docs/screenshots/07-diff.png) | ![dry-run preview](docs/screenshots/08-dry-run.png) |
-| `tenantctl update --diff` — live cluster state vs. the desired spec, with only the actual drift shown | `tenantctl create --dry-run` — preview the full bundle without touching the cluster |
-| ![GitOps config file](docs/screenshots/09-gitops-file.png) | ![delete and safety guards](docs/screenshots/10-delete-and-safety.png) |
-| `tenantctl generate -f` — a tenant spec driven entirely from a YAML file | `tenantctl delete`, plus the guard that refuses to delete a namespace it doesn't manage |
-| ![input validation](docs/screenshots/11-validation.png) | |
-| Spec validation rejects a bad name or an unparsable resource quantity before touching the cluster | |
+| `tenantctl --help` — the six-command CLI surface | `tenantctl generate` — the full manifest bundle, rendered offline |
+| ![create onboarding a tenant on a real cluster](docs/screenshots/03-create-and-verify.png) | ![list tenants with live quota utilization](docs/screenshots/04-list.png) |
+| `tenantctl create` onboarding `acme-corp` on a real `kind` cluster, verified with `kubectl` | `tenantctl list` — every tenant with a live quota-utilization summary |
+| ![real NetworkPolicy isolation proof](docs/screenshots/05-network-isolation.png) | ![per-resource quota status across every tenant](docs/screenshots/12-status.png) |
+| Live proof against real pod traffic: cross-namespace blocked, same-namespace and DNS allowed | `tenantctl status` — per-resource quota usage vs. limits, across every tenant |
+| ![update reconciling quota and network allow-list](docs/screenshots/06-update-reconcile.png) | ![diff mode previewing drift](docs/screenshots/07-diff.png) |
+| `tenantctl update` raising a quota and adding a cross-namespace allow-list to a live tenant | `tenantctl update --diff` — live cluster state vs. the desired spec, with only the actual drift shown |
+| ![dry-run preview](docs/screenshots/08-dry-run.png) | ![GitOps config file](docs/screenshots/09-gitops-file.png) |
+| `tenantctl create --dry-run` — preview the full bundle without touching the cluster | `tenantctl generate -f` — a tenant spec driven entirely from a YAML file |
+| ![delete and safety guards](docs/screenshots/10-delete-and-safety.png) | ![input validation](docs/screenshots/11-validation.png) |
+| `tenantctl delete`, plus the guard that refuses to delete a namespace it doesn't manage | Spec validation rejects a bad name or an unparsable resource quantity before touching the cluster |
 
 ## Quick start
 
@@ -52,6 +52,7 @@ cluster:
 kind create cluster --name tenant-demo
 ./bin/tenantctl create --name acme-corp --admin-name acme-admins --context kind-tenant-demo
 ./bin/tenantctl list --context kind-tenant-demo
+./bin/tenantctl status acme-corp --context kind-tenant-demo
 ./bin/tenantctl update --name acme-corp --admin-name acme-admins --cpu-request 3 --context kind-tenant-demo
 ./bin/tenantctl delete --name acme-corp --context kind-tenant-demo
 ```
@@ -140,11 +141,25 @@ tenantctl delete --name acme-corp [--kubeconfig path] [--context name]
 
 ### `tenantctl list`
 
-Lists every `tenantctl`-managed tenant namespace, with phase and creation
-time.
+Lists every `tenantctl`-managed tenant namespace, with phase, creation
+time, and a one-line quota summary (its single most-utilized resource, e.g.
+`memory 72%`). For the full per-resource breakdown, use `status`.
 
 ```sh
 tenantctl list [--kubeconfig path] [--context name]
+```
+
+### `tenantctl status`
+
+Reports live `ResourceQuota` usage against hard limits, per resource, as a
+percentage. With no argument, reports every tenant; with a tenant name,
+reports just that tenant and fails if it doesn't exist or isn't
+`tenantctl`-managed. This is read-only and complements, rather than
+duplicates, `update --diff`: `status` is about quota usage numbers,
+`update --diff` is about full-bundle spec-vs-live drift.
+
+```sh
+tenantctl status [name] [--kubeconfig path] [--context name]
 ```
 
 ### Shared flags
@@ -175,8 +190,8 @@ When `--file` is set, the other spec flags above are ignored. See
 keys mirror the flags above (`quota.cpuRequest`, `limitRange.defaultCPULimit`,
 `allowedNamespaces`, `adminSubject.kind`, ...).
 
-`create`, `update`, `delete`, and `list` additionally accept `--kubeconfig`
-and `--context` to target a specific cluster and context.
+`create`, `update`, `delete`, `list`, and `status` additionally accept
+`--kubeconfig` and `--context` to target a specific cluster and context.
 
 ## Architecture
 

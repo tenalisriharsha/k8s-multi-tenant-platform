@@ -29,6 +29,10 @@ echo "=== kubectl get all isolation objects ==="
 kubectl --context "$CTX" get resourcequota,limitrange,networkpolicy,role,rolebinding -n "$TENANT"
 
 echo
+echo "=== status: live quota usage vs. limits ==="
+"$BIN" status "$TENANT" --context "$CTX"
+
+echo
 echo "=== update: raise the CPU quota and allow a shared ingress namespace ==="
 "$BIN" update --name "$TENANT" --admin-name "${TENANT}-admins" \
   --cpu-request 3 --allow-namespace ingress-nginx --context "$CTX"
