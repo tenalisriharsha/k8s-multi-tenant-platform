@@ -8,6 +8,10 @@ import (
 	"testing"
 
 	"github.com/spf13/cobra"
+	corev1 "k8s.io/api/core/v1"
+	"k8s.io/apimachinery/pkg/api/resource"
+
+	"github.com/tenalisriharsha/k8s-multi-tenant-platform/internal/tenant"
 )
 
 func runCmd(t *testing.T, cmd *cobra.Command, args ...string) (stdout string, err error) {
@@ -129,9 +133,14 @@ func TestGenerate_DefaultsMatchDocumentedValues(t *testing.T) {
 	}
 }
 
-func TestRootCmd_HasAllFiveSubcommands(t *testing.T) {
+func TestRootCmd_HasAllSixSubcommands(t *testing.T) {
+	// README.md advertises "the six-command CLI surface"; a command missing
+	// here must fail this test rather than silently shrinking the surface.
 	root := newRootCmd()
-	want := map[string]bool{"generate": false, "create": false, "update": false, "delete": false, "list": false}
+	want := map[string]bool{
+		"generate": false, "create": false, "update": false,
+		"delete": false, "list": false, "status": false,
+	}
 	for _, c := range root.Commands() {
 		if _, ok := want[c.Name()]; ok {
 			want[c.Name()] = true
@@ -141,6 +150,9 @@ func TestRootCmd_HasAllFiveSubcommands(t *testing.T) {
 		if !found {
 			t.Errorf("root command missing subcommand %q", name)
 		}
+	}
+	if got := len(root.Commands()); got != len(want) {
+		t.Errorf("root command has %d subcommands, want exactly %d", got, len(want))
 	}
 }
 
@@ -326,6 +338,49 @@ func TestList_FailsFastOnBadKubeconfig(t *testing.T) {
 	_, err := runCmd(t, newListCmd(), "--kubeconfig", unreachableKubeconfig(t))
 	if err == nil {
 		t.Fatal("expected an error when the kubeconfig path does not exist")
+	}
+}
+
+func TestStatus_FailsFastOnBadKubeconfig(t *testing.T) {
+	_, err := runCmd(t, newStatusCmd(), "--kubeconfig", unreachableKubeconfig(t))
+	if err == nil {
+		t.Fatal("expected an error when the kubeconfig path does not exist")
+	}
+}
+
+func TestStatus_WithNameFailsFastOnBadKubeconfig(t *testing.T) {
+	_, err := runCmd(t, newStatusCmd(), "acme-corp", "--kubeconfig", unreachableKubeconfig(t))
+	if err == nil {
+		t.Fatal("expected an error when the kubeconfig path does not exist")
+	}
+}
+
+func TestStatus_RejectsMoreThanOneArg(t *testing.T) {
+	_, err := runCmd(t, newStatusCmd(), "acme-corp", "extra-arg", "--kubeconfig", unreachableKubeconfig(t))
+	if err == nil {
+		t.Fatal("expected status to reject more than one positional argument (README: `status [name]`)")
+	}
+}
+
+func TestPeakUtilization_NoUsageReturnsDash(t *testing.T) {
+	if got := peakUtilization(nil); got != "-" {
+		t.Errorf("peakUtilization(nil) = %q, want %q", got, "-")
+	}
+	if got := peakUtilization([]tenant.ResourceUsage{}); got != "-" {
+		t.Errorf("peakUtilization(empty) = %q, want %q", got, "-")
+	}
+}
+
+func TestPeakUtilization_PicksMostUtilizedResource(t *testing.T) {
+	usage := []tenant.ResourceUsage{
+		{Resource: corev1.ResourceRequestsCPU, Used: resource.MustParse("1"), Hard: resource.MustParse("4")},        // 25%
+		{Resource: corev1.ResourceRequestsMemory, Used: resource.MustParse("3Gi"), Hard: resource.MustParse("4Gi")}, // 75%
+		{Resource: corev1.ResourcePods, Used: resource.MustParse("2"), Hard: resource.MustParse("20")},              // 10%
+	}
+	got := peakUtilization(usage)
+	want := "memory 75%"
+	if got != want {
+		t.Errorf("peakUtilization(...) = %q, want %q", got, want)
 	}
 }
 
