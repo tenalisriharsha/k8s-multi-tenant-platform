@@ -384,6 +384,21 @@ func TestPeakUtilization_PicksMostUtilizedResource(t *testing.T) {
 	}
 }
 
+func TestPeakUtilization_UndottedResourceNameIsUnchanged(t *testing.T) {
+	// "pods" has no "requests."/"limits." prefix to strip, unlike the
+	// quota keys in TestPeakUtilization_PicksMostUtilizedResource; this
+	// exercises shortResourceName's no-dot fallback path.
+	usage := []tenant.ResourceUsage{
+		{Resource: corev1.ResourceRequestsCPU, Used: resource.MustParse("1"), Hard: resource.MustParse("4")}, // 25%
+		{Resource: corev1.ResourcePods, Used: resource.MustParse("18"), Hard: resource.MustParse("20")},      // 90%
+	}
+	got := peakUtilization(usage)
+	want := "pods 90%"
+	if got != want {
+		t.Errorf("peakUtilization(...) = %q, want %q", got, want)
+	}
+}
+
 func TestClusterFlags_NewClientset_ValidKubeconfig(t *testing.T) {
 	// A well-formed kubeconfig should build a clientset without dialing
 	// the server, exercising the real client-go loading path end to end.
