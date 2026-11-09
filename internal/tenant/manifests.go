@@ -9,6 +9,11 @@ import (
 	"k8s.io/apimachinery/pkg/util/intstr"
 )
 
+// ResourceQuotaName is the name every tenant's ResourceQuota object is
+// built and looked up under. It's exported so client.go can fetch a
+// tenant's live quota status without duplicating the literal.
+const ResourceQuotaName = "tenant-quota"
+
 // Bundle is the full set of Kubernetes objects that make up one tenant's
 // isolation boundary.
 type Bundle struct {
@@ -71,7 +76,7 @@ func mustQty(v string) resource.Quantity {
 func buildResourceQuota(s Spec) *corev1.ResourceQuota {
 	return &corev1.ResourceQuota{
 		TypeMeta:   metav1.TypeMeta{APIVersion: "v1", Kind: "ResourceQuota"},
-		ObjectMeta: objectMeta(s, "tenant-quota"),
+		ObjectMeta: objectMeta(s, ResourceQuotaName),
 		Spec: corev1.ResourceQuotaSpec{
 			Hard: corev1.ResourceList{
 				corev1.ResourceRequestsCPU:    mustQty(s.Quota.CPURequest),
