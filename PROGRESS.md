@@ -74,6 +74,15 @@ Design choices:
   `Get` never populates) are noise that would appear in every diff whether
   or not anything actually changed. `DiffTenant` strips both before
   rendering, so the output is only the fields that actually drifted.
+- **`status` reads ResourceQuota.Status, not Spec.** Kubernetes already
+  computes live usage into `ResourceQuota.Status.Used` on every object with
+  a controller watching the namespace; `status` just reads and formats it
+  rather than summing pod resources itself, so it's always as fresh as the
+  cluster's own quota controller. `ListTenants` now does one extra `Get`
+  per tenant to pull this in; a missing `ResourceQuota` (e.g. a namespace
+  mid-creation) is treated as "no usage data yet," not an error, since a
+  transient gap in one tenant's quota data shouldn't fail `list`/`status`
+  for every other tenant.
 
 ## Phased build plan
 
@@ -117,12 +126,25 @@ Design choices:
         NetworkPolicy that was removed from the desired spec
   - [x] README and preview screenshots updated for all Phase 2 commands
 
-- [ ] **Phase 3 — Multi-tenant fleet view** (Night 3)
-  - [ ] `tenantctl status` reporting live quota usage vs. limits per tenant
-        (note: `update --diff` already gives spec-vs-live drift for a single
-        tenant; `status` should focus on usage numbers, not object diffing)
-  - [ ] `tenantctl list` enhancement: show quota utilization per tenant
-  - [ ] Optional Helm chart packaging of the same primitives
+- [x] **Phase 3 — Multi-tenant fleet view** (Night 3)
+  - [x] `tenantctl status [name]` reporting live quota usage vs. limits per
+        tenant, one row per `ResourceQuota`-managed resource (`requests.cpu`,
+        `requests.memory`, `limits.cpu`, `limits.memory`, `pods`), each as
+        used/hard/utilization-percent. With no argument, reports every
+        tenantctl-managed tenant; with a name, reports just that tenant and
+        fails the same way `delete`/`update` do if it doesn't exist or isn't
+        tenantctl-managed. Read-only, and deliberately does not duplicate
+        `update --diff` (full-bundle spec-vs-live drift) — `status` is only
+        about quota numbers (`Client.GetTenant`, `internal/tenant.ResourceUsage`)
+  - [x] `tenantctl list` enhancement: a `QUOTA` column showing each tenant's
+        single most-utilized resource (e.g. `memory 72%`) for an at-a-glance
+        fleet view; the full per-resource breakdown is `status`'s job, not
+        `list`'s (`internal/tenant.Client.ListTenants` now also fetches each
+        tenant's `ResourceQuota` status; `cmd_list.go`'s `peakUtilization`)
+  - [ ] Optional Helm chart packaging of the same primitives — deferred,
+        marked optional in the original plan; not needed for `status`/`list`
+        to be useful, and no indication yet that a packaging format beyond a
+        single static binary + `generate | kubectl apply -f -` is wanted
 
 - [ ] **Phase 4 — Hardening & polish** (Night 4+)
   - [ ] PodSecurity admission labels per tenant
@@ -131,19 +153,23 @@ Design choices:
 
 ## Resume point for next session
 
-Phase 1 and Phase 2 are both complete. The CLI now has five commands
-(`generate`, `create`, `update`, `delete`, `list`), cross-namespace
-NetworkPolicy allow-listing, `--dry-run`/`--diff` modes, and GitOps
-config-file specs via `--file`. Everything in Phase 2 was exercised for
-real against a local `kind` cluster, not just the fake clientset.
+Phases 1 through 3 are complete. The CLI now has six commands (`generate`,
+`create`, `update`, `delete`, `list`, `status`), cross-namespace
+NetworkPolicy allow-listing, `--dry-run`/`--diff` modes, GitOps config-file
+specs via `--file`, and live per-tenant quota usage reporting via `status`
+and a `list` summary column. Everything in Phase 3 was exercised for real
+against a local `kind` cluster: a pod without explicit resource requests
+(defaulted by the tenant's `LimitRange`) was deployed, and `status`/`list`
+were confirmed to show its real, non-zero usage.
 
-Start Phase 3 by reading `cmd/tenantctl/cmd_list.go` and
-`internal/tenant/client.go`'s `ListTenants`/`Info` — `tenantctl status` will
-need per-tenant quota usage, which means fetching each managed namespace's
-`ResourceQuota.Status.Used` (already present on the live object; `Info`
-currently only carries `Name`/`Phase`/`CreatedAt`, so it'll need a new
-field or a separate `Usage` type). Keep `status` read-only and separate
-from `update --diff`, which already covers full-bundle drift detection —
-`status` is specifically about quota numbers, not another diff mode.
+Start Phase 4 by reading `internal/tenant/manifests.go`'s `buildNamespace`
+(for the PodSecurity admission labels item — these are plain namespace
+labels like `pod-security.kubernetes.io/enforce=restricted`, so they slot
+into `tenantLabels`/`buildNamespace` and `Spec` the same way
+`AllowedNamespaces` did in Phase 2) and `tests/e2e_kind_test.go` (for the
+envtest-in-CI item — note CI currently has no docker/kind, which is why e2e
+is gated behind the `e2e` build tag and run manually; envtest doesn't need
+docker, only the `kubebuilder` test-binaries, so it's a better fit for
+actually running in GitHub Actions than the existing kind-based e2e test).
 
 STATUS: IN_PROGRESS
