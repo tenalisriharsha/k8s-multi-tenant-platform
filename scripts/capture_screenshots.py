@@ -233,14 +233,11 @@ def main():
     s.command(cmd2, out2)
     shots.append(s)
 
-    # 4. list with a second tenant
+    # 4. onboard a second tenant (list/status are captured after the
+    # network-isolation pods below are running, so their quota numbers are
+    # real rather than all-zero)
     shell(f"kubectl --context {CTX} delete namespace beta-inc --ignore-not-found --wait=true", check=False)
     shell(f"./bin/tenantctl create --name beta-inc --admin-name beta-admins --context {CTX}", check=True)
-    cmd = f"./bin/tenantctl list --context {CTX}"
-    _, out = shell(cmd, check=True)
-    s = Shot("04-list.png", "tenantctl list — every tenantctl-managed tenant")
-    s.command(cmd, out)
-    shots.append(s)
 
     # 5. live network isolation proof
     for ns in ("acme-corp", "beta-inc"):
@@ -288,6 +285,26 @@ def main():
 
     cmd = f"kubectl --context {CTX} exec -n acme-corp probe -- nslookup kubernetes.default.svc.cluster.local"
     _, out = shell(cmd, check=False)
+    s.command(cmd, out)
+    shots.append(s)
+
+    # 4b/4c. list and status now that real pods (defaulted by each
+    # tenant's LimitRange) are running, so the quota numbers are non-zero
+    shell(
+        f"for i in $(seq 1 15); do "
+        f"[ \"$(kubectl --context {CTX} get resourcequota tenant-quota -n acme-corp "
+        f"-o jsonpath='{{.status.used.pods}}')\" != \"0\" ] && break; sleep 1; done",
+        check=False,
+    )
+    cmd = f"./bin/tenantctl list --context {CTX}"
+    _, out = shell(cmd, check=True)
+    s = Shot("04-list.png", "tenantctl list — every tenantctl-managed tenant, with live quota utilization")
+    s.command(cmd, out)
+    shots.append(s)
+
+    cmd = f"./bin/tenantctl status --context {CTX}"
+    _, out = shell(cmd, check=True)
+    s = Shot("12-status.png", "tenantctl status — per-resource quota usage vs. limits, across every tenant")
     s.command(cmd, out)
     shots.append(s)
 
