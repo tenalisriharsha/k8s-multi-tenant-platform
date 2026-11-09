@@ -2,9 +2,11 @@ package main
 
 import (
 	"fmt"
+	"strings"
 	"text/tabwriter"
 
 	"github.com/spf13/cobra"
+	corev1 "k8s.io/api/core/v1"
 
 	"github.com/tenalisriharsha/k8s-multi-tenant-platform/internal/tenant"
 )
@@ -59,5 +61,17 @@ func peakUtilization(usage []tenant.ResourceUsage) string {
 			peak = u
 		}
 	}
-	return fmt.Sprintf("%s %d%%", peak.Resource, peak.Percent())
+	return fmt.Sprintf("%s %d%%", shortResourceName(peak.Resource), peak.Percent())
+}
+
+// shortResourceName strips the quota-key prefix ("requests." or "limits.")
+// from a ResourceQuota key, e.g. "requests.memory" -> "memory", so the
+// QUOTA column reads as a bare resource name regardless of which quota
+// counted toward it.
+func shortResourceName(name corev1.ResourceName) string {
+	s := string(name)
+	if i := strings.LastIndex(s, "."); i != -1 {
+		return s[i+1:]
+	}
+	return s
 }
