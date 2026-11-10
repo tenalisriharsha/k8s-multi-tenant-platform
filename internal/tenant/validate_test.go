@@ -201,6 +201,36 @@ func TestValidate_AllowedNamespaces(t *testing.T) {
 	})
 }
 
+func TestValidate_PodSecurityLevel(t *testing.T) {
+	cases := []struct {
+		name    string
+		level   PodSecurityLevel
+		wantErr bool
+	}{
+		{"empty disables PSA labels", "", false},
+		{"privileged", PodSecurityPrivileged, false},
+		{"baseline", PodSecurityBaseline, false},
+		{"restricted", PodSecurityRestricted, false},
+		{"none is not a Spec-level value", PodSecurityLevel("none"), true},
+		{"arbitrary string", PodSecurityLevel("super-locked-down"), true},
+		{"wrong case", PodSecurityLevel("Restricted"), true},
+	}
+
+	for _, c := range cases {
+		t.Run(c.name, func(t *testing.T) {
+			s := validSpec()
+			s.PodSecurityLevel = c.level
+			err := Validate(s)
+			if c.wantErr && err == nil {
+				t.Fatalf("expected error for podSecurityLevel %q, got nil", c.level)
+			}
+			if !c.wantErr && err != nil {
+				t.Fatalf("expected no error for podSecurityLevel %q, got: %v", c.level, err)
+			}
+		})
+	}
+}
+
 func TestDefaultQuota(t *testing.T) {
 	q := DefaultQuota()
 	if q.CPURequest != "2" || q.MemoryRequest != "4Gi" || q.CPULimit != "4" || q.MemoryLimit != "8Gi" || q.MaxPods != "20" {

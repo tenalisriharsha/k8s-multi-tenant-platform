@@ -27,6 +27,57 @@ func TestBuild_Namespace(t *testing.T) {
 	}
 }
 
+// podSecurityLabelKeysForTest mirrors manifests.go's own podSecurityLabelKeys,
+// duplicated here (rather than referencing the unexported var) so this test
+// still catches a regression if a future change renames or drops one of the
+// three standard labels.
+var podSecurityLabelKeysForTest = []string{
+	"pod-security.kubernetes.io/enforce",
+	"pod-security.kubernetes.io/audit",
+	"pod-security.kubernetes.io/warn",
+}
+
+func TestBuild_Namespace_EmptyPodSecurityLevelOmitsAllLabels(t *testing.T) {
+	s := validSpec()
+	s.PodSecurityLevel = ""
+	ns := Build(s).Namespace
+
+	for _, key := range podSecurityLabelKeysForTest {
+		if v, ok := ns.Labels[key]; ok {
+			t.Errorf("expected no %q label when PodSecurityLevel is empty, got %q", key, v)
+		}
+	}
+	// Must still carry exactly the two tenant-identity labels: an empty
+	// PodSecurityLevel must render byte-identical to pre-Phase-4 output.
+	if len(ns.Labels) != 2 {
+		t.Errorf("expected exactly 2 labels (tenant identity only) when PodSecurityLevel is empty, got %v", ns.Labels)
+	}
+}
+
+func TestBuild_Namespace_PodSecurityLevelSetsAllThreeLabels(t *testing.T) {
+	for _, level := range []PodSecurityLevel{PodSecurityPrivileged, PodSecurityBaseline, PodSecurityRestricted} {
+		t.Run(string(level), func(t *testing.T) {
+			s := validSpec()
+			s.PodSecurityLevel = level
+			ns := Build(s).Namespace
+
+			for _, key := range podSecurityLabelKeysForTest {
+				got, ok := ns.Labels[key]
+				if !ok {
+					t.Fatalf("expected label %q to be set, got labels %v", key, ns.Labels)
+				}
+				if got != string(level) {
+					t.Errorf("label %q = %q, want %q", key, got, level)
+				}
+			}
+			// Tenant-identity labels must still be present alongside the PSA ones.
+			if ns.Labels[TenantLabelKey] != s.Name || ns.Labels[TenantManagedByKey] != ManagedByValue {
+				t.Errorf("expected tenant-identity labels to still be set, got %v", ns.Labels)
+			}
+		})
+	}
+}
+
 func TestBuild_ResourceQuota(t *testing.T) {
 	s := validSpec()
 	s.Quota = Quota{
