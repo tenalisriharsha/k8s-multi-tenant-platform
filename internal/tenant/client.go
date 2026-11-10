@@ -138,11 +138,12 @@ func (c *Client) CreateTenant(ctx context.Context, b Bundle) error {
 	return nil
 }
 
-// UpdateTenant reconciles an existing tenant's quota, limit range, network
-// policies, and RBAC to match the given Bundle. It never touches the
-// Namespace object itself (a tenant's name is immutable), and it refuses to
-// act on a namespace that is not labeled as tenantctl-managed, for the same
-// reason DeleteTenant does.
+// UpdateTenant reconciles an existing tenant's namespace labels (e.g. its
+// Pod Security Admission level), quota, limit range, network policies, and
+// RBAC to match the given Bundle. The namespace itself is never deleted or
+// recreated (a tenant's name is immutable), only its labels are updated. It
+// refuses to act on a namespace that is not labeled as tenantctl-managed,
+// for the same reason DeleteTenant does.
 func (c *Client) UpdateTenant(ctx context.Context, b Bundle) error {
 	ns := b.Namespace.Name
 
@@ -155,6 +156,12 @@ func (c *Client) UpdateTenant(ctx context.Context, b Bundle) error {
 	}
 	if nsObj.Labels[TenantManagedByKey] != ManagedByValue {
 		return fmt.Errorf("namespace %q is not managed by tenantctl, refusing to update", ns)
+	}
+	if !reflect.DeepEqual(nsObj.Labels, b.Namespace.Labels) {
+		nsObj.Labels = b.Namespace.Labels
+		if _, err := c.kube.CoreV1().Namespaces().Update(ctx, nsObj, metav1.UpdateOptions{}); err != nil {
+			return fmt.Errorf("update namespace labels: %w", err)
+		}
 	}
 
 	currentRQ, err := c.kube.CoreV1().ResourceQuotas(ns).Get(ctx, b.ResourceQuota.Name, metav1.GetOptions{})
@@ -267,6 +274,21 @@ func (c *Client) DiffTenant(ctx context.Context, b Bundle) (string, error) {
 	}
 
 	var current, desired bytes.Buffer
+
+	liveNS := nsObj.DeepCopy()
+	stripServerFields(liveNS)
+	liveNS.Spec = corev1.NamespaceSpec{}
+	liveNS.Status = corev1.NamespaceStatus{}
+	// kubernetes.io/metadata.name is injected by the API server on every
+	// namespace and never set by Build(), so it would otherwise show up as
+	// permanent diff noise on every tenant, every time.
+	delete(liveNS.Labels, "kubernetes.io/metadata.name")
+	if err := diffSection(&current, "Namespace", b.Namespace.Name, liveNS, nil); err != nil {
+		return "", err
+	}
+	if err := diffSection(&desired, "Namespace", b.Namespace.Name, withoutTypeMeta(b.Namespace), nil); err != nil {
+		return "", err
+	}
 
 	rq, rqErr := c.kube.CoreV1().ResourceQuotas(ns).Get(ctx, b.ResourceQuota.Name, metav1.GetOptions{})
 	if rqErr == nil {

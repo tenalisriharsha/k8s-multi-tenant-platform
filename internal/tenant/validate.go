@@ -54,6 +54,12 @@ func Validate(s Spec) error {
 		}
 	}
 
+	switch s.PodSecurityLevel {
+	case "", PodSecurityPrivileged, PodSecurityBaseline, PodSecurityRestricted:
+	default:
+		return fmt.Errorf("invalid podSecurityLevel %q: must be one of privileged, baseline, restricted, or empty to disable", s.PodSecurityLevel)
+	}
+
 	switch s.AdminSubject.Kind {
 	case SubjectKindUser, SubjectKindGroup, SubjectKindServiceAccount:
 	default:

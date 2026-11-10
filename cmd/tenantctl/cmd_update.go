@@ -16,11 +16,12 @@ func newUpdateCmd() *cobra.Command {
 
 	cmd := &cobra.Command{
 		Use:   "update",
-		Short: "Reconcile an existing tenant's quota, limits, network policy, and RBAC to match a spec",
+		Short: "Reconcile an existing tenant's namespace labels, quota, limits, network policy, and RBAC to match a spec",
 		Long: "Build the full desired bundle from the given spec (the same flags, or --file,\n" +
-			"as `create`) and reconcile an existing tenant's quota, limit range, network\n" +
-			"policies, and RBAC to match it. The tenant's namespace itself is never\n" +
-			"touched. Fails if the tenant does not exist or is not tenantctl-managed.",
+			"as `create`) and reconcile an existing tenant's namespace labels (e.g. its Pod\n" +
+			"Security Admission level), quota, limit range, network policies, and RBAC to\n" +
+			"match it. The namespace itself is never deleted or recreated, only its labels\n" +
+			"are updated. Fails if the tenant does not exist or is not tenantctl-managed.",
 		RunE: func(cmd *cobra.Command, args []string) error {
 			spec, err := specFl.resolveSpec()
 			if err != nil {
@@ -61,7 +62,7 @@ func newUpdateCmd() *cobra.Command {
 				return err
 			}
 
-			fmt.Fprintf(cmd.OutOrStdout(), "tenant %q updated: quota, limit range, %d network policies, and RBAC reconciled\n", spec.Name, len(bundle.NetworkPolicies))
+			fmt.Fprintf(cmd.OutOrStdout(), "tenant %q updated: namespace (pod-security=%s), quota, limit range, %d network policies, and RBAC reconciled\n", spec.Name, podSecurityLabel(spec), len(bundle.NetworkPolicies))
 			return nil
 		},
 	}

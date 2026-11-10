@@ -30,6 +30,7 @@ type specFlags struct {
 	defaultMemoryLimit   string
 
 	allowedNamespaces []string
+	podSecurity       string
 
 	adminKind      string
 	adminName      string
@@ -57,12 +58,19 @@ func addSpecFlags(cmd *cobra.Command, f *specFlags) {
 
 	cmd.Flags().StringArrayVar(&f.allowedNamespaces, "allow-namespace", nil, "additional namespace allowed bidirectional NetworkPolicy traffic with this tenant (repeatable), e.g. a shared ingress controller namespace")
 
+	cmd.Flags().StringVar(&f.podSecurity, "pod-security", "restricted", "Pod Security Admission level enforced on the tenant namespace: privileged, baseline, restricted, or none to disable")
+
 	cmd.Flags().StringVar(&f.adminKind, "admin-kind", "Group", "RBAC subject kind bound as tenant admin: User, Group, or ServiceAccount")
 	cmd.Flags().StringVar(&f.adminName, "admin-name", "", "RBAC subject name bound as tenant admin (required unless --file is set)")
 	cmd.Flags().StringVar(&f.adminNamespace, "admin-namespace", "", "namespace of the admin ServiceAccount (required when --admin-kind=ServiceAccount)")
 }
 
 func (f *specFlags) toSpec() tenant.Spec {
+	podSecurity := tenant.PodSecurityLevel(f.podSecurity)
+	if f.podSecurity == "none" {
+		podSecurity = ""
+	}
+
 	return tenant.Spec{
 		Name: f.name,
 		Quota: tenant.Quota{
@@ -79,6 +87,7 @@ func (f *specFlags) toSpec() tenant.Spec {
 			DefaultMemoryLimit:   f.defaultMemoryLimit,
 		},
 		AllowedNamespaces: f.allowedNamespaces,
+		PodSecurityLevel:  podSecurity,
 		AdminSubject: tenant.AdminSubject{
 			Kind:      tenant.SubjectKind(f.adminKind),
 			Name:      f.adminName,
@@ -102,6 +111,15 @@ func (f *specFlags) resolveSpec() (tenant.Spec, error) {
 		return tenant.Spec{}, fmt.Errorf("required flag \"admin-name\" not set (or use --file to load a spec from a file)")
 	}
 	return f.toSpec(), nil
+}
+
+// podSecurityLabel formats a Spec's PodSecurityLevel for status output,
+// e.g. "restricted" or "none" when PSA labels are disabled.
+func podSecurityLabel(s tenant.Spec) string {
+	if s.PodSecurityLevel == "" {
+		return "none"
+	}
+	return string(s.PodSecurityLevel)
 }
 
 // clusterFlags holds the CLI flags shared by every subcommand that talks

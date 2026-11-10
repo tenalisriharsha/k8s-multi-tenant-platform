@@ -53,12 +53,28 @@ func objectMeta(s Spec, name string) metav1.ObjectMeta {
 	}
 }
 
+// podSecurityLabelKeys are the three standard Pod Security Admission labels.
+// tenantctl always sets all three to the same level, so the audit and warn
+// logs a namespace generates match the level it actually enforces.
+var podSecurityLabelKeys = []string{
+	"pod-security.kubernetes.io/enforce",
+	"pod-security.kubernetes.io/audit",
+	"pod-security.kubernetes.io/warn",
+}
+
 func buildNamespace(s Spec) *corev1.Namespace {
+	labels := tenantLabels(s)
+	if s.PodSecurityLevel != "" {
+		for _, key := range podSecurityLabelKeys {
+			labels[key] = string(s.PodSecurityLevel)
+		}
+	}
+
 	return &corev1.Namespace{
 		TypeMeta: metav1.TypeMeta{APIVersion: "v1", Kind: "Namespace"},
 		ObjectMeta: metav1.ObjectMeta{
 			Name:   s.Name,
-			Labels: tenantLabels(s),
+			Labels: labels,
 		},
 	}
 }

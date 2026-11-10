@@ -18,7 +18,9 @@ func newGenerateCmd() *cobra.Command {
 		Short: "Render a tenant's manifest bundle to YAML without touching a cluster",
 		Long: "Render the Namespace, ResourceQuota, LimitRange, NetworkPolicies, Role, and\n" +
 			"RoleBinding for a tenant as a single multi-document YAML stream. Useful for\n" +
-			"reviewing what `create` would apply, or for piping into `kubectl apply -f -`.",
+			"reviewing what `create` would apply, or for piping into `kubectl apply -f -`.\n" +
+			"The Namespace carries pod-security.kubernetes.io/{enforce,audit,warn} labels\n" +
+			"at the level set by --pod-security (default: restricted).",
 		RunE: func(cmd *cobra.Command, args []string) error {
 			spec, err := flags.resolveSpec()
 			if err != nil {

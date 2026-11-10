@@ -47,7 +47,7 @@ func newCreateCmd() *cobra.Command {
 				return err
 			}
 
-			fmt.Fprintf(cmd.OutOrStdout(), "tenant %q created: namespace, quota, limit range, %d network policies, and RBAC applied\n", spec.Name, len(bundle.NetworkPolicies))
+			fmt.Fprintf(cmd.OutOrStdout(), "tenant %q created: namespace (pod-security=%s), quota, limit range, %d network policies, and RBAC applied\n", spec.Name, podSecurityLabel(spec), len(bundle.NetworkPolicies))
 			return nil
 		},
 	}
