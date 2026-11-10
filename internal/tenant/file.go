@@ -24,6 +24,7 @@ import (
 //	  defaultCPULimit: 500m
 //	  defaultMemoryLimit: 512Mi
 //	allowedNamespaces: [ingress-nginx]
+//	podSecurityLevel: restricted
 //	adminSubject:
 //	  kind: Group
 //	  name: acme-admins

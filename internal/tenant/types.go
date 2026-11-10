@@ -49,6 +49,15 @@ type AdminSubject struct {
 	Namespace string      `json:"namespace,omitempty"` // required when Kind == SubjectKindServiceAccount
 }
 
+// PodSecurityLevel identifies a Kubernetes Pod Security Admission level.
+type PodSecurityLevel string
+
+const (
+	PodSecurityPrivileged PodSecurityLevel = "privileged"
+	PodSecurityBaseline   PodSecurityLevel = "baseline"
+	PodSecurityRestricted PodSecurityLevel = "restricted"
+)
+
 // Spec is the declarative, cluster-independent description of a tenant.
 // Everything tenantctl builds and applies is derived from a Spec.
 type Spec struct {
@@ -60,8 +69,15 @@ type Spec struct {
 	// rule) that this tenant's namespace may exchange traffic with in both
 	// directions, e.g. a shared ingress controller namespace. Leave empty
 	// for the default same-namespace-only isolation boundary.
-	AllowedNamespaces []string     `json:"allowedNamespaces,omitempty"`
-	AdminSubject      AdminSubject `json:"adminSubject"`
+	AllowedNamespaces []string `json:"allowedNamespaces,omitempty"`
+	// PodSecurityLevel, when set to one of "privileged", "baseline", or
+	// "restricted", applies that Pod Security Admission level to the
+	// tenant's namespace via the standard pod-security.kubernetes.io
+	// enforce/audit/warn labels. Left empty, the namespace gets no
+	// PodSecurity labels at all, matching the tenant's isolation boundary
+	// before this field existed.
+	PodSecurityLevel PodSecurityLevel `json:"podSecurityLevel,omitempty"`
+	AdminSubject     AdminSubject     `json:"adminSubject"`
 }
 
 // DefaultQuota returns a conservative, non-zero quota suitable for a
