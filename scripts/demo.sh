@@ -21,6 +21,19 @@ echo "=== create ==="
 "$BIN" create --name "$TENANT" --admin-name "${TENANT}-admins" --context "$CTX"
 
 echo
+echo "=== pod security: namespace labels and a rejected privileged pod ==="
+kubectl --context "$CTX" get namespace "$TENANT" -o jsonpath='{.metadata.labels}'
+echo
+for i in $(seq 1 30); do
+  kubectl --context "$CTX" get serviceaccount default -n "$TENANT" >/dev/null 2>&1 && break
+  sleep 1
+done
+kubectl --context "$CTX" run privileged-test -n "$TENANT" --image=busybox:1.36 --restart=Never \
+  --overrides='{"spec":{"containers":[{"name":"privileged-test","image":"busybox:1.36","securityContext":{"privileged":true}}]}}' \
+  || true
+kubectl --context "$CTX" delete pod privileged-test -n "$TENANT" --ignore-not-found --wait=false >/dev/null
+
+echo
 echo "=== list ==="
 "$BIN" list --context "$CTX"
 

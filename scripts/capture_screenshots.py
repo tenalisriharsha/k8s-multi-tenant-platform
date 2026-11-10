@@ -10,6 +10,7 @@ truncated only at explicit, labeled points.
 Requires: playwright (pip install playwright && playwright install chromium),
 kind, kubectl, and a built ./bin/tenantctl (this script builds it itself).
 """
+import json
 import os
 import re
 import subprocess
@@ -147,6 +148,30 @@ def run(cmd, cwd=ROOT, env=None, check=False):
     return proc.returncode, combined
 
 
+def restricted_pod_overrides(name, image, command):
+    """kubectl run overrides JSON that satisfies the "restricted" Pod
+    Security Admission level every tenant namespace defaults to as of
+    --pod-security, so a demo pod started with a bare `kubectl run` (which
+    otherwise runs as root with no security context) can actually schedule.
+    """
+    return json.dumps({
+        "spec": {
+            "securityContext": {"seccompProfile": {"type": "RuntimeDefault"}},
+            "containers": [{
+                "name": name,
+                "image": image,
+                "command": command,
+                "securityContext": {
+                    "allowPrivilegeEscalation": False,
+                    "runAsNonRoot": True,
+                    "runAsUser": 1000,
+                    "capabilities": {"drop": ["ALL"]},
+                },
+            }],
+        }
+    })
+
+
 def shell(cmd_str, cwd=ROOT, check=False):
     print(f"+ {cmd_str}")
     proc = subprocess.run(
@@ -215,7 +240,7 @@ def main():
     cmd = "./bin/tenantctl generate --name acme-corp --admin-name acme-admins"
     _, out = shell(cmd, check=True)
     out = truncate_head_tail(
-        out, 26, 15,
+        out, 29, 15,
         "output truncated — 5 more objects: LimitRange, 3x NetworkPolicy, Role",
     )
     s = Shot("02-generate.png", "tenantctl generate — offline manifest bundle")
@@ -233,6 +258,26 @@ def main():
     s.command(cmd2, out2)
     shots.append(s)
 
+    # 3b. Pod Security Admission — real enforcement, plus a live level change
+    s = Shot("13-pod-security.png", "Pod Security Admission — default-restricted, a blocked privileged pod, and a live level change")
+    cmd = f"kubectl --context {CTX} get namespace acme-corp -o jsonpath='{{.metadata.labels}}'"
+    _, out = shell(cmd, check=True)
+    s.command(cmd, out + "\n")
+    cmd = (
+        f"kubectl --context {CTX} run privileged-test -n acme-corp --image=busybox:1.36 --restart=Never "
+        f'--overrides=\'{{"spec":{{"containers":[{{"name":"privileged-test","image":"busybox:1.36",'
+        f'"securityContext":{{"privileged":true}}}}]}}}}\''
+    )
+    _, out = shell(cmd, check=False)
+    s.command(cmd, out)
+    cmd = f"./bin/tenantctl update --name acme-corp --admin-name acme-admins --pod-security baseline --context {CTX}"
+    _, out = shell(cmd, check=True)
+    s.command(cmd, out)
+    cmd = f"kubectl --context {CTX} get namespace acme-corp -o jsonpath='{{.metadata.labels}}'"
+    _, out = shell(cmd, check=True)
+    s.command(cmd, out + "\n")
+    shots.append(s)
+
     # 4. onboard a second tenant (list/status are captured after the
     # network-isolation pods below are running, so their quota numbers are
     # real rather than all-zero)
@@ -247,21 +292,24 @@ def main():
             f"sleep 1; done",
             check=False,
         )
+    probe_overrides = restricted_pod_overrides("probe", "busybox:1.36", ["sleep", "3600"])
     shell(
         f"kubectl --context {CTX} run probe --image=busybox:1.36 -n acme-corp --restart=Never "
-        f"--command -- sleep 3600",
+        f"--overrides='{probe_overrides}'",
         check=True,
     )
     shell(f"kubectl --context {CTX} wait --for=condition=Ready pod/probe -n acme-corp --timeout=60s", check=True)
+    target_overrides = restricted_pod_overrides("target", "busybox:1.36", ["httpd", "-f", "-p", "8080", "-h", "/etc"])
     shell(
         f"kubectl --context {CTX} run target --image=busybox:1.36 -n acme-corp --restart=Never "
-        f"--command -- httpd -f -p 8080 -h /etc",
+        f"--overrides='{target_overrides}'",
         check=True,
     )
     shell(f"kubectl --context {CTX} wait --for=condition=Ready pod/target -n acme-corp --timeout=60s", check=True)
+    other_overrides = restricted_pod_overrides("other", "busybox:1.36", ["httpd", "-f", "-p", "8080", "-h", "/etc"])
     shell(
         f"kubectl --context {CTX} run other --image=busybox:1.36 -n beta-inc --restart=Never "
-        f"--command -- httpd -f -p 8080 -h /etc",
+        f"--overrides='{other_overrides}'",
         check=True,
     )
     shell(f"kubectl --context {CTX} wait --for=condition=Ready pod/other -n beta-inc --timeout=60s", check=True)
@@ -338,7 +386,7 @@ def main():
     # 8. dry-run
     cmd = "./bin/tenantctl create --name gamma-llc --admin-name gamma-admins --dry-run"
     _, out = shell(cmd, check=True)
-    out = truncate(out, 28, "output truncated — 6 more objects: LimitRange, 3x NetworkPolicy, Role, RoleBinding")
+    out = truncate(out, 31, "output truncated — 6 more objects: LimitRange, 3x NetworkPolicy, Role, RoleBinding")
     s = Shot("08-dry-run.png", "tenantctl create --dry-run — preview without touching the cluster")
     s.command(cmd, out)
     shots.append(s)
@@ -346,7 +394,7 @@ def main():
     # 9. GitOps config-file spec
     cmd = "./bin/tenantctl generate -f examples/tenant.yaml"
     _, out = shell(cmd, check=True)
-    out = truncate(out, 27, "output truncated — 7 more objects: LimitRange, 4x NetworkPolicy (including allow-cross-namespace from allowedNamespaces), Role, RoleBinding")
+    out = truncate(out, 30, "output truncated — 7 more objects: LimitRange, 4x NetworkPolicy (including allow-cross-namespace from allowedNamespaces), Role, RoleBinding")
     s = Shot("09-gitops-file.png", "tenantctl generate -f — a tenant spec driven entirely from a GitOps file")
     s.command(cmd, out)
     shots.append(s)
