@@ -54,9 +54,42 @@ adminSubject:
 	if spec.AdminSubject.Kind != SubjectKindGroup || spec.AdminSubject.Name != "acme-admins" {
 		t.Errorf("AdminSubject = %+v, unexpected", spec.AdminSubject)
 	}
+	// README: "an omitted podSecurityLevel in a file means no PodSecurity
+	// labels at all, not the restricted default" -- unlike the --pod-security
+	// flag, which defaults to restricted. This file has no podSecurityLevel
+	// key at all.
+	if spec.PodSecurityLevel != "" {
+		t.Errorf("PodSecurityLevel = %q, want empty for a file that omits podSecurityLevel", spec.PodSecurityLevel)
+	}
 
 	if err := Validate(spec); err != nil {
 		t.Fatalf("a spec loaded from a well-formed file should pass Validate, got: %v", err)
+	}
+}
+
+func TestLoadSpecFile_PodSecurityLevelExplicit(t *testing.T) {
+	dir := t.TempDir()
+	path := filepath.Join(dir, "tenant.yaml")
+	const data = `
+name: locked-down-corp
+quota: {cpuRequest: "2", memoryRequest: 4Gi, cpuLimit: "4", memoryLimit: 8Gi, maxPods: "20"}
+limitRange: {defaultCPURequest: 100m, defaultMemoryRequest: 128Mi, defaultCPULimit: 500m, defaultMemoryLimit: 512Mi}
+podSecurityLevel: baseline
+adminSubject: {kind: Group, name: locked-down-admins}
+`
+	if err := os.WriteFile(path, []byte(data), 0o600); err != nil {
+		t.Fatalf("write spec file: %v", err)
+	}
+
+	spec, err := LoadSpecFile(path)
+	if err != nil {
+		t.Fatalf("LoadSpecFile: %v", err)
+	}
+	if spec.PodSecurityLevel != PodSecurityBaseline {
+		t.Errorf("PodSecurityLevel = %q, want %q", spec.PodSecurityLevel, PodSecurityBaseline)
+	}
+	if err := Validate(spec); err != nil {
+		t.Fatalf("expected a spec with an explicit podSecurityLevel to pass Validate, got: %v", err)
 	}
 }
 
@@ -128,5 +161,8 @@ func TestLoadSpecFile_ExampleFileMatchesDocs(t *testing.T) {
 	}
 	if spec.AdminSubject.Kind != SubjectKindGroup || spec.AdminSubject.Name != "acme-admins" {
 		t.Errorf("AdminSubject = %+v, unexpected", spec.AdminSubject)
+	}
+	if spec.PodSecurityLevel != PodSecurityRestricted {
+		t.Errorf("PodSecurityLevel = %q, want %q (per examples/tenant.yaml)", spec.PodSecurityLevel, PodSecurityRestricted)
 	}
 }

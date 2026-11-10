@@ -131,6 +131,88 @@ func TestGenerate_DefaultsMatchDocumentedValues(t *testing.T) {
 	if flags.adminKind != "Group" {
 		t.Errorf("default --admin-kind = %q, want %q", flags.adminKind, "Group")
 	}
+	if flags.podSecurity != "restricted" {
+		t.Errorf("default --pod-security = %q, want %q", flags.podSecurity, "restricted")
+	}
+	if spec.PodSecurityLevel != tenant.PodSecurityRestricted {
+		t.Errorf("default spec.PodSecurityLevel = %q, want %q", spec.PodSecurityLevel, tenant.PodSecurityRestricted)
+	}
+}
+
+func TestSpecFlags_ToSpec_PodSecurityNoneMapsToEmptyLevel(t *testing.T) {
+	flags := &specFlags{name: "acme-corp", adminName: "acme-admins", adminKind: "Group", podSecurity: "none"}
+	spec := flags.toSpec()
+	if spec.PodSecurityLevel != "" {
+		t.Errorf("--pod-security none should map to an empty PodSecurityLevel (PSA labels disabled), got %q", spec.PodSecurityLevel)
+	}
+}
+
+func TestSpecFlags_ToSpec_PodSecurityLevelsPassThrough(t *testing.T) {
+	for _, level := range []string{"privileged", "baseline", "restricted"} {
+		t.Run(level, func(t *testing.T) {
+			flags := &specFlags{name: "acme-corp", adminName: "acme-admins", adminKind: "Group", podSecurity: level}
+			spec := flags.toSpec()
+			if string(spec.PodSecurityLevel) != level {
+				t.Errorf("--pod-security %s should pass through unchanged, got PodSecurityLevel=%q", level, spec.PodSecurityLevel)
+			}
+		})
+	}
+}
+
+func TestPodSecurityLabel_FormatsForDisplay(t *testing.T) {
+	cases := []struct {
+		level tenant.PodSecurityLevel
+		want  string
+	}{
+		{"", "none"},
+		{tenant.PodSecurityRestricted, "restricted"},
+		{tenant.PodSecurityBaseline, "baseline"},
+		{tenant.PodSecurityPrivileged, "privileged"},
+	}
+	for _, c := range cases {
+		s := tenant.Spec{PodSecurityLevel: c.level}
+		if got := podSecurityLabel(s); got != c.want {
+			t.Errorf("podSecurityLabel(PodSecurityLevel=%q) = %q, want %q", c.level, got, c.want)
+		}
+	}
+}
+
+func TestGenerate_InvalidPodSecurityLevelFailsValidation(t *testing.T) {
+	out, err := runCmd(t, newGenerateCmd(),
+		"--name", "acme-corp", "--admin-name", "acme-admins", "--pod-security", "super-locked-down")
+	if err == nil {
+		t.Fatal("expected a validation error for an invalid --pod-security value")
+	}
+	if strings.Contains(out, "kind:") {
+		t.Errorf("expected no YAML to be rendered for an invalid spec, got:\n%s", out)
+	}
+}
+
+func TestGenerate_PodSecurityDefaultRestrictedAppliesAllThreeLabels(t *testing.T) {
+	out, err := runCmd(t, newGenerateCmd(), "--name", "acme-corp", "--admin-name", "acme-admins")
+	if err != nil {
+		t.Fatalf("generate failed: %v", err)
+	}
+	for _, line := range []string{
+		"pod-security.kubernetes.io/enforce: restricted",
+		"pod-security.kubernetes.io/audit: restricted",
+		"pod-security.kubernetes.io/warn: restricted",
+	} {
+		if !strings.Contains(out, line) {
+			t.Errorf("expected rendered Namespace to contain %q by default, got:\n%s", line, out)
+		}
+	}
+}
+
+func TestGenerate_PodSecurityNoneOmitsLabels(t *testing.T) {
+	out, err := runCmd(t, newGenerateCmd(),
+		"--name", "acme-corp", "--admin-name", "acme-admins", "--pod-security", "none")
+	if err != nil {
+		t.Fatalf("generate failed: %v", err)
+	}
+	if strings.Contains(out, "pod-security.kubernetes.io") {
+		t.Errorf("expected --pod-security none to omit all PSA labels, got:\n%s", out)
+	}
 }
 
 func TestRootCmd_HasAllSixSubcommands(t *testing.T) {

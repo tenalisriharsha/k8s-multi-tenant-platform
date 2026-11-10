@@ -224,9 +224,78 @@ func TestUpdateTenant_ReconcilesQuotaLimitRangeAndRBAC(t *testing.T) {
 		t.Errorf("role binding subjects = %+v, want a single subject named new-admins", rb.Subjects)
 	}
 
-	// Namespace itself must never be touched by update.
-	if _, err := kube.CoreV1().Namespaces().Get(ctx, spec.Name, metav1.GetOptions{}); err != nil {
+	// The namespace itself is never deleted or recreated by update (a
+	// tenant's name is immutable) -- only its labels can change, and this
+	// spec's PodSecurityLevel didn't, so its labels must be untouched too.
+	ns, err := kube.CoreV1().Namespaces().Get(ctx, spec.Name, metav1.GetOptions{})
+	if err != nil {
 		t.Fatalf("namespace should still exist after update: %v", err)
+	}
+	if ns.Labels[TenantLabelKey] != spec.Name || ns.Labels[TenantManagedByKey] != ManagedByValue {
+		t.Errorf("namespace labels = %v, want unchanged tenant-identity labels", ns.Labels)
+	}
+}
+
+// TestUpdateTenant_ReconcilesNamespacePodSecurityLabel pins down the Phase 4
+// fix: before it, UpdateTenant's doc comment explicitly said the namespace
+// was never touched at all, which meant a PodSecurityLevel change could
+// never actually be applied by `update`. Now it must reconcile the
+// namespace's pod-security.kubernetes.io/* labels to match the new spec.
+func TestUpdateTenant_ReconcilesNamespacePodSecurityLabel(t *testing.T) {
+	ctx := context.Background()
+	spec := validSpec()
+	spec.Name = "psa-corp"
+	spec.PodSecurityLevel = PodSecurityRestricted
+
+	kube := fake.NewSimpleClientset()
+	client := NewClient(kube)
+	if err := client.CreateTenant(ctx, Build(spec)); err != nil {
+		t.Fatalf("CreateTenant: %v", err)
+	}
+
+	lowered := spec
+	lowered.PodSecurityLevel = PodSecurityBaseline
+	if err := client.UpdateTenant(ctx, Build(lowered)); err != nil {
+		t.Fatalf("UpdateTenant (lower PSA level): %v", err)
+	}
+
+	ns, err := kube.CoreV1().Namespaces().Get(ctx, spec.Name, metav1.GetOptions{})
+	if err != nil {
+		t.Fatalf("get namespace: %v", err)
+	}
+	for _, key := range []string{
+		"pod-security.kubernetes.io/enforce",
+		"pod-security.kubernetes.io/audit",
+		"pod-security.kubernetes.io/warn",
+	} {
+		if got := ns.Labels[key]; got != "baseline" {
+			t.Errorf("namespace label %q = %q, want %q after update", key, got, "baseline")
+		}
+	}
+	if ns.Name != spec.Name {
+		t.Errorf("namespace name changed to %q, want it to remain %q (a tenant can't be renamed by update)", ns.Name, spec.Name)
+	}
+
+	disabled := spec
+	disabled.PodSecurityLevel = ""
+	if err := client.UpdateTenant(ctx, Build(disabled)); err != nil {
+		t.Fatalf("UpdateTenant (disable PSA): %v", err)
+	}
+	ns, err = kube.CoreV1().Namespaces().Get(ctx, spec.Name, metav1.GetOptions{})
+	if err != nil {
+		t.Fatalf("get namespace after disabling PSA: %v", err)
+	}
+	for _, key := range []string{
+		"pod-security.kubernetes.io/enforce",
+		"pod-security.kubernetes.io/audit",
+		"pod-security.kubernetes.io/warn",
+	} {
+		if _, ok := ns.Labels[key]; ok {
+			t.Errorf("expected label %q to be removed once PodSecurityLevel is cleared, got %v", key, ns.Labels)
+		}
+	}
+	if ns.Labels[TenantManagedByKey] != ManagedByValue {
+		t.Errorf("expected tenant-identity labels to survive clearing PSA labels, got %v", ns.Labels)
 	}
 }
 
@@ -366,6 +435,81 @@ func TestDiffTenant_ShowsRealDrift(t *testing.T) {
 	}
 	if !hasRemoved || !hasAdded {
 		t.Errorf("expected diff to show requests.cpu changing (- old, + new), got:\n%s", diff)
+	}
+}
+
+func TestDiffTenant_ShowsPodSecurityLabelDrift(t *testing.T) {
+	ctx := context.Background()
+	spec := validSpec()
+	spec.Name = "psa-diff-corp"
+	spec.PodSecurityLevel = PodSecurityRestricted
+
+	kube := fake.NewSimpleClientset()
+	client := NewClient(kube)
+	if err := client.CreateTenant(ctx, Build(spec)); err != nil {
+		t.Fatalf("CreateTenant: %v", err)
+	}
+
+	lowered := spec
+	lowered.PodSecurityLevel = PodSecurityBaseline
+
+	diff, err := client.DiffTenant(ctx, Build(lowered))
+	if err != nil {
+		t.Fatalf("DiffTenant: %v", err)
+	}
+
+	var hasRemoved, hasAdded bool
+	for _, line := range strings.Split(diff, "\n") {
+		if strings.HasPrefix(line, "- ") && strings.Contains(line, "pod-security.kubernetes.io/enforce: restricted") {
+			hasRemoved = true
+		}
+		if strings.HasPrefix(line, "+ ") && strings.Contains(line, "pod-security.kubernetes.io/enforce: baseline") {
+			hasAdded = true
+		}
+	}
+	if !hasRemoved || !hasAdded {
+		t.Errorf("expected diff to show the PodSecurityLevel changing from restricted to baseline, got:\n%s", diff)
+	}
+}
+
+// TestDiffTenant_StripsAPIServerInjectedMetadataNameLabel pins down a real
+// gap found against a live kind cluster: a real API server stamps every
+// namespace with a kubernetes.io/metadata.name label that Build() never
+// sets, which would otherwise show up as permanent diff noise on every
+// tenant, forever. The fake clientset used elsewhere in this file never
+// injects that label on its own, so this test adds it by hand to the seeded
+// object to reproduce the real-cluster shape DiffTenant has to handle.
+func TestDiffTenant_StripsAPIServerInjectedMetadataNameLabel(t *testing.T) {
+	ctx := context.Background()
+	spec := validSpec()
+	spec.Name = "metadata-name-corp"
+
+	kube := fake.NewSimpleClientset()
+	client := NewClient(kube)
+	if err := client.CreateTenant(ctx, Build(spec)); err != nil {
+		t.Fatalf("CreateTenant: %v", err)
+	}
+
+	ns, err := kube.CoreV1().Namespaces().Get(ctx, spec.Name, metav1.GetOptions{})
+	if err != nil {
+		t.Fatalf("get namespace: %v", err)
+	}
+	ns.Labels["kubernetes.io/metadata.name"] = spec.Name
+	if _, err := kube.CoreV1().Namespaces().Update(ctx, ns, metav1.UpdateOptions{}); err != nil {
+		t.Fatalf("seed kubernetes.io/metadata.name label: %v", err)
+	}
+
+	diff, err := client.DiffTenant(ctx, Build(spec))
+	if err != nil {
+		t.Fatalf("DiffTenant: %v", err)
+	}
+	// The DNS-egress NetworkPolicy legitimately uses the
+	// "kubernetes.io/metadata.name: kube-system" selector label elsewhere in
+	// the diff, so match on the tenant's own name specifically rather than
+	// the bare key, to isolate the namespace's own injected label.
+	noise := "kubernetes.io/metadata.name: " + spec.Name
+	if strings.Contains(diff, noise) {
+		t.Errorf("expected %q to be stripped from the diff as API-server noise, got:\n%s", noise, diff)
 	}
 }
 

@@ -123,6 +123,55 @@ func TestTenantctlAgainstRealCluster(t *testing.T) {
 		kubectlGet("get", "rolebinding", "tenant-admin-binding", "-n", "e2e-corp")
 	})
 
+	t.Run("pod security admission: default restricted rejects a privileged pod, update --pod-security baseline allows a plain one", func(t *testing.T) {
+		kubectlGet := func(args ...string) string {
+			return mustRun(t, 15*time.Second, repoRoot, "kubectl",
+				append([]string{"--kubeconfig", kubeconfig}, args...)...)
+		}
+
+		nsLabels := kubectlGet("get", "namespace", "e2e-corp", "-o", "jsonpath={.metadata.labels}")
+		if !strings.Contains(nsLabels, `"pod-security.kubernetes.io/enforce":"restricted"`) {
+			t.Errorf("expected the tenant namespace to default to the restricted Pod Security Admission level, got labels: %s", nsLabels)
+		}
+
+		privilegedOverrides := `{"spec":{"containers":[{"name":"psa-reject-test","image":"busybox:1.36","securityContext":{"privileged":true}}]}}`
+		out, err := run(t, 30*time.Second, repoRoot, "kubectl", "--kubeconfig", kubeconfig,
+			"run", "psa-reject-test", "-n", "e2e-corp", "--image=busybox:1.36", "--restart=Never",
+			"--overrides="+privilegedOverrides)
+		if err == nil {
+			t.Fatalf("expected a privileged pod to be rejected by the restricted namespace's PodSecurity admission, but it was created:\n%s", out)
+		}
+		if !strings.Contains(out, `violates PodSecurity "restricted:latest"`) {
+			t.Errorf("expected a PodSecurity admission rejection mentioning the restricted level, got:\n%s", out)
+		}
+
+		out = mustRun(t, 30*time.Second, repoRoot, binary, append([]string{
+			"update", "--name", "e2e-corp", "--admin-name", "e2e-admins", "--pod-security", "baseline",
+		}, ctxArgs...)...)
+		if !strings.Contains(out, "pod-security=baseline") || !strings.Contains(out, "updated") {
+			t.Errorf("unexpected update --pod-security baseline output: %s", out)
+		}
+
+		nsLabels = kubectlGet("get", "namespace", "e2e-corp", "-o", "jsonpath={.metadata.labels}")
+		if !strings.Contains(nsLabels, `"pod-security.kubernetes.io/enforce":"baseline"`) {
+			t.Errorf("expected update to actually relabel the namespace to baseline, got labels: %s", nsLabels)
+		}
+
+		// A plain pod with no special securityContext violates restricted
+		// (missing runAsNonRoot/seccompProfile/dropped capabilities) but is
+		// allowed under baseline, which only blocks known privilege
+		// escalations (privileged, hostNetwork, hostPath, ...). This proves
+		// the relabel was actually enforced by the admission controller, not
+		// just reflected in the namespace object.
+		mustRun(t, 30*time.Second, repoRoot, "kubectl", "--kubeconfig", kubeconfig,
+			"run", "psa-allow-test", "-n", "e2e-corp", "--image=busybox:1.36", "--restart=Never",
+			"--command", "--", "sleep", "60")
+		t.Cleanup(func() {
+			_, _ = run(t, 15*time.Second, repoRoot, "kubectl", "--kubeconfig", kubeconfig,
+				"delete", "pod", "psa-allow-test", "-n", "e2e-corp", "--ignore-not-found", "--wait=false")
+		})
+	})
+
 	t.Run("create refuses a namespace that already exists", func(t *testing.T) {
 		out, err := run(t, 30*time.Second, repoRoot, binary, append([]string{
 			"create", "--name", "e2e-corp", "--admin-name", "e2e-admins",
