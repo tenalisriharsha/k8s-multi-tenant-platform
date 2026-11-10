@@ -21,16 +21,18 @@ those details so it can be read end to end or dropped into a real cluster.
 |---|---|
 | ![tenantctl command overview](docs/screenshots/01-help.png) | ![generate offline manifest bundle](docs/screenshots/02-generate.png) |
 | `tenantctl --help` — the six-command CLI surface | `tenantctl generate` — the full manifest bundle, rendered offline |
-| ![create onboarding a tenant on a real cluster](docs/screenshots/03-create-and-verify.png) | ![list tenants with live quota utilization](docs/screenshots/04-list.png) |
-| `tenantctl create` onboarding `acme-corp` on a real `kind` cluster, verified with `kubectl` | `tenantctl list` — every tenant with a live quota-utilization summary |
-| ![real NetworkPolicy isolation proof](docs/screenshots/05-network-isolation.png) | ![per-resource quota status across every tenant](docs/screenshots/12-status.png) |
-| Live proof against real pod traffic: cross-namespace blocked, same-namespace and DNS allowed | `tenantctl status` — per-resource quota usage vs. limits, across every tenant |
-| ![update reconciling quota and network allow-list](docs/screenshots/06-update-reconcile.png) | ![diff mode previewing drift](docs/screenshots/07-diff.png) |
-| `tenantctl update` raising a quota and adding a cross-namespace allow-list to a live tenant | `tenantctl update --diff` — live cluster state vs. the desired spec, with only the actual drift shown |
-| ![dry-run preview](docs/screenshots/08-dry-run.png) | ![GitOps config file](docs/screenshots/09-gitops-file.png) |
-| `tenantctl create --dry-run` — preview the full bundle without touching the cluster | `tenantctl generate -f` — a tenant spec driven entirely from a YAML file |
-| ![delete and safety guards](docs/screenshots/10-delete-and-safety.png) | ![input validation](docs/screenshots/11-validation.png) |
-| `tenantctl delete`, plus the guard that refuses to delete a namespace it doesn't manage | Spec validation rejects a bad name or an unparsable resource quantity before touching the cluster |
+| ![create onboarding a tenant on a real cluster](docs/screenshots/03-create-and-verify.png) | ![live Pod Security Admission enforcement and a level change](docs/screenshots/13-pod-security.png) |
+| `tenantctl create` onboarding `acme-corp` on a real `kind` cluster, verified with `kubectl` | Pod Security Admission: default-`restricted` namespace labels, a real privileged pod rejected, and `update` lowering the level live |
+| ![real NetworkPolicy isolation proof](docs/screenshots/05-network-isolation.png) | ![list tenants with live quota utilization](docs/screenshots/04-list.png) |
+| Live proof against real pod traffic: cross-namespace blocked, same-namespace and DNS allowed | `tenantctl list` — every tenant with a live quota-utilization summary |
+| ![per-resource quota status across every tenant](docs/screenshots/12-status.png) | ![update reconciling quota and network allow-list](docs/screenshots/06-update-reconcile.png) |
+| `tenantctl status` — per-resource quota usage vs. limits, across every tenant | `tenantctl update` raising a quota and adding a cross-namespace allow-list to a live tenant |
+| ![diff mode previewing drift](docs/screenshots/07-diff.png) | ![dry-run preview](docs/screenshots/08-dry-run.png) |
+| `tenantctl update --diff` — live cluster state vs. the desired spec, with only the actual drift shown | `tenantctl create --dry-run` — preview the full bundle without touching the cluster |
+| ![GitOps config file](docs/screenshots/09-gitops-file.png) | ![delete and safety guards](docs/screenshots/10-delete-and-safety.png) |
+| `tenantctl generate -f` — a tenant spec driven entirely from a YAML file | `tenantctl delete`, plus the guard that refuses to delete a namespace it doesn't manage |
+| ![input validation](docs/screenshots/11-validation.png) | |
+| Spec validation rejects a bad name or an unparsable resource quantity before touching the cluster | |
 
 ## Quick start
 
@@ -64,8 +66,12 @@ bring-up, with [`scripts/demo.sh`](scripts/demo.sh).
 
 Running `create` for a tenant named `acme-corp` applies:
 
-- **Namespace** `acme-corp`, labeled `tenant-platform.io/tenant=acme-corp`
-  and `tenant-platform.io/managed-by=tenantctl`
+- **Namespace** `acme-corp`, labeled `tenant-platform.io/tenant=acme-corp`,
+  `tenant-platform.io/managed-by=tenantctl`, and, by default,
+  `pod-security.kubernetes.io/{enforce,audit,warn}=restricted` — the
+  cluster's built-in Pod Security Admission controller then rejects any pod
+  in the namespace that doesn't meet the `restricted` profile (privileged
+  containers, missing `runAsNonRoot`, etc.), no extra policy engine needed
 - **ResourceQuota** `tenant-quota` capping total CPU/memory requests and
   limits and the max pod count in the namespace
 - **LimitRange** `tenant-limits` setting default per-container CPU/memory
@@ -109,12 +115,13 @@ contacting the cluster at all.
 
 ### `tenantctl update`
 
-Reconciles an existing tenant's quota, limit range, network policies, and
-RBAC to match the given spec — the same flags (or `--file`) as `create`.
-The tenant's namespace itself is never touched. Network policies are fully
-reconciled: one that's no longer desired (e.g. a removed
-`--allow-namespace`) is deleted, not just left behind. Fails if the tenant
-doesn't exist or isn't `tenantctl`-managed.
+Reconciles an existing tenant's namespace labels (including its Pod
+Security Admission level), quota, limit range, network policies, and RBAC
+to match the given spec — the same flags (or `--file`) as `create`. The
+namespace itself is never deleted or recreated, only its labels are
+updated. Network policies are fully reconciled: one that's no longer
+desired (e.g. a removed `--allow-namespace`) is deleted, not just left
+behind. Fails if the tenant doesn't exist or isn't `tenantctl`-managed.
 
 ```sh
 tenantctl update --name acme-corp --admin-name acme-admins --cpu-request 3 --context kind-tenant-demo
@@ -181,6 +188,7 @@ tenantctl status [name] [--kubeconfig path] [--context name]
 | `--default-cpu-limit` | `500m` | Per-container default CPU limit |
 | `--default-memory-limit` | `512Mi` | Per-container default memory limit |
 | `--allow-namespace` | | Additional namespace allowed bidirectional NetworkPolicy traffic with this tenant (repeatable), e.g. a shared ingress controller namespace |
+| `--pod-security` | `restricted` | Pod Security Admission level enforced on the tenant namespace: `privileged`, `baseline`, `restricted`, or `none` to disable |
 | `--admin-kind` | `Group` | RBAC subject kind: `User`, `Group`, or `ServiceAccount` |
 | `--admin-name` | *(required unless `--file`)* | RBAC subject name bound as tenant admin |
 | `--admin-namespace` | | Required when `--admin-kind=ServiceAccount` |
@@ -188,7 +196,9 @@ tenantctl status [name] [--kubeconfig path] [--context name]
 When `--file` is set, the other spec flags above are ignored. See
 [`examples/tenant.yaml`](examples/tenant.yaml) for the file format — its
 keys mirror the flags above (`quota.cpuRequest`, `limitRange.defaultCPULimit`,
-`allowedNamespaces`, `adminSubject.kind`, ...).
+`allowedNamespaces`, `podSecurityLevel`, `adminSubject.kind`, ...). Unlike
+the flags, an omitted `podSecurityLevel` in a file means no PodSecurity
+labels at all, not the `restricted` default — GitOps specs are explicit.
 
 `create`, `update`, `delete`, `list`, and `status` additionally accept
 `--kubeconfig` and `--context` to target a specific cluster and context.
@@ -209,6 +219,86 @@ examples/            Sample GitOps tenant spec file for `--file`
 scripts/             Local dev helpers: kind cluster bring-up, a full CLI demo, screenshot capture
 docs/screenshots/    Preview images used above
 ```
+
+One tenant's isolation boundary, as applied by `create` (or reconciled by
+`update`):
+
+```
+                              kubeconfig context
+                                     │
+                                     ▼
+                            ┌─────────────────┐
+                            │    tenantctl     │
+                            └────────┬─────────┘
+                                     │ apply/reconcile
+                                     ▼
+ ┌───────────────────────────────────────────────────────────────────┐
+ │ Namespace "acme-corp"                                              │
+ │ pod-security.kubernetes.io/{enforce,audit,warn}=restricted         │
+ │                                                                    │
+ │  ┌───────────────┐  ┌───────────────┐  ┌───────────────────────┐  │
+ │  │ ResourceQuota │  │  LimitRange   │  │   Role + RoleBinding   │  │
+ │  │ caps CPU/mem/ │  │ per-container │  │  scopes an admin       │  │
+ │  │ pod count     │  │ defaults      │  │  subject to this       │  │
+ │  └───────────────┘  └───────────────┘  │  namespace only        │  │
+ │                                         └───────────────────────┘  │
+ │  NetworkPolicy: deny-all, then allow-same-namespace +              │
+ │  allow-dns-egress (+ allow-cross-namespace if --allow-namespace)   │
+ │                                                                    │
+ │        ✗ cross-namespace traffic        ✓ same-namespace traffic   │
+ │        ✗ privileged/root pods           ✓ DNS to kube-system       │
+ └───────────────────────────────────────────────────────────────────┘
+```
+
+Every object above is built from the same `Spec` by `internal/tenant.Build`,
+so `generate`, `create`, and `update` always apply byte-identical output for
+the same spec — there's no separate code path per command that could drift.
+
+### Troubleshooting
+
+- **A pod won't schedule, and `kubectl describe pod` shows a `PodSecurity`
+  admission error** (`violates PodSecurity "restricted:latest"`, missing
+  `runAsNonRoot`, `allowPrivilegeEscalation`, `seccompProfile`, or dropped
+  capabilities). This is expected: the tenant's namespace defaults to the
+  `restricted` Pod Security Admission level. Either fix the pod's
+  `securityContext` to comply (the usual fix — see the Kubernetes
+  [Pod Security Standards](https://kubernetes.io/docs/concepts/security/pod-security-standards/)),
+  or lower the tenant's level with
+  `tenantctl update --pod-security baseline` (or `none` to disable PSA
+  labels entirely, not recommended for production tenants).
+
+- **`tenantctl create`/`update`/`delete`/`status` fails with `"namespace
+  ... is not managed by tenantctl"` or `"not tenantctl-managed"`.** The
+  namespace exists but is missing the
+  `tenant-platform.io/managed-by=tenantctl` label — either it wasn't
+  created by `tenantctl` (a hand-created or pre-existing namespace that
+  happens to share the tenant's name), or the label was manually removed.
+  `tenantctl` refuses to act on it rather than guess; rename the tenant or
+  relabel the namespace deliberately if it's actually meant to be managed.
+
+- **`tenantctl status`/`list` shows `no quota data` or a `-` instead of
+  usage numbers.** The tenant's `ResourceQuota` hasn't been populated by
+  the cluster's quota controller yet — normal for a few seconds right
+  after `create`, since Kubernetes computes `.status.used` asynchronously.
+  Re-run the command; this is never treated as an error so one tenant's
+  transient gap doesn't fail the whole fleet view.
+
+- **Pods between two tenants, or between a tenant and a shared namespace
+  like an ingress controller, can't reach each other.** Confirm the
+  traffic is actually allowed: same-namespace traffic and DNS to
+  `kube-system` are allowed by default, but everything else — including
+  traffic to another tenant — is denied by the `deny-all` policy unless
+  the target namespace is in `--allow-namespace`
+  (`allow-cross-namespace` policy). Check
+  `kubectl get networkpolicy -n <tenant>` and `tenantctl update --diff` to
+  see what's actually applied versus what the spec intends.
+
+- **`tenantctl update --diff` shows unexpected noise on every run, even
+  when nothing changed.** This should not happen — `DiffTenant` already
+  strips API-server bookkeeping (`resourceVersion`, `uid`,
+  `managedFields`, the namespace's injected `kubernetes.io/metadata.name`
+  label, etc.) before comparing. If you see persistent noise, it's worth
+  filing as a bug rather than working around.
 
 ## Development
 

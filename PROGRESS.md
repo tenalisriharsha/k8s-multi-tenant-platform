@@ -65,14 +65,19 @@ Design choices:
 - **`update` reconciles rather than patches.** `UpdateTenant` always builds
   the full desired `Bundle` from a `Spec` (same as `create`) and makes the
   live cluster match it exactly, including deleting a NetworkPolicy that's
-  no longer in the desired set (e.g. a removed `--allow-namespace`). This
-  keeps "what's on the cluster" always explainable by "what's in the spec,"
-  rather than accumulating drift from partial, field-by-field patches.
+  no longer in the desired set (e.g. a removed `--allow-namespace`) and
+  updating the tenant namespace's own labels (e.g. its Pod Security
+  Admission level) when they drift from the spec. This keeps "what's on
+  the cluster" always explainable by "what's in the spec," rather than
+  accumulating drift from partial, field-by-field patches. The namespace's
+  *name* still never changes — a tenant can't be renamed by `update`, only
+  relabeled.
 - **`--diff` strips API server bookkeeping before comparing.** A live
   object's `resourceVersion`, `uid`, `managedFields`, `creationTimestamp`,
+  a namespace's API-server-injected `kubernetes.io/metadata.name` label,
   and a freshly-built object's `apiVersion`/`kind` (which a typed client-go
   `Get` never populates) are noise that would appear in every diff whether
-  or not anything actually changed. `DiffTenant` strips both before
+  or not anything actually changed. `DiffTenant` strips all of this before
   rendering, so the output is only the fields that actually drifted.
 - **`status` reads ResourceQuota.Status, not Spec.** Kubernetes already
   computes live usage into `ResourceQuota.Status.Used` on every object with
@@ -146,30 +151,65 @@ Design choices:
         to be useful, and no indication yet that a packaging format beyond a
         single static binary + `generate | kubectl apply -f -` is wanted
 
-- [ ] **Phase 4 — Hardening & polish** (Night 4+)
-  - [ ] PodSecurity admission labels per tenant
-  - [ ] Integration tests via envtest in CI
-  - [ ] Documentation pass: architecture diagram, troubleshooting guide
+- [ ] **Phase 4 — Hardening & polish** (Night 4)
+  - [x] PodSecurity admission labels per tenant: a `PodSecurityLevel` field
+        on `Spec` (`privileged`/`baseline`/`restricted`, empty = no labels,
+        matching pre-Phase-4 output byte-for-byte) renders as the standard
+        `pod-security.kubernetes.io/{enforce,audit,warn}` namespace labels
+        (`buildNamespace`). `generate`/`create`/`update` expose it as
+        `--pod-security` (default `restricted`; `none` opts out). This also
+        closed a real gap: `UpdateTenant`/`DiffTenant` never touched the
+        Namespace object at all before tonight (`update`'s doc comment said
+        so explicitly), which meant a PSA level change could never actually
+        be applied or previewed by `update`/`update --diff`. Both now
+        reconcile/diff the namespace's labels (never its name), with the
+        API-server-injected `kubernetes.io/metadata.name` label stripped
+        from the diff so it doesn't show up as permanent noise
+  - [x] Documentation pass: an ASCII architecture diagram and a
+        troubleshooting guide (real error messages from this project,
+        with their actual cause and fix) added to README's Architecture
+        section
+  - [ ] Integration tests via envtest in CI — deferred; this is test-file
+        work (`tests/envtest_test.go` or similar) that belongs to the
+        tester, not the coder. CI still has no docker/kind either way,
+        which is why envtest (no docker needed, just `kubebuilder`
+        test-binaries) remains the better fit than the existing
+        `kind`-based e2e test for actually running inside GitHub Actions —
+        see `tests/e2e_kind_test.go`'s `e2e` build tag
 
 ## Resume point for next session
 
-Phases 1 through 3 are complete. The CLI now has six commands (`generate`,
-`create`, `update`, `delete`, `list`, `status`), cross-namespace
-NetworkPolicy allow-listing, `--dry-run`/`--diff` modes, GitOps config-file
-specs via `--file`, and live per-tenant quota usage reporting via `status`
-and a `list` summary column. Everything in Phase 3 was exercised for real
-against a local `kind` cluster: a pod without explicit resource requests
-(defaulted by the tenant's `LimitRange`) was deployed, and `status`/`list`
-were confirmed to show its real, non-zero usage.
+Phases 1 through 3 are complete, and Phase 4 is partially done: PodSecurity
+admission labels and the documentation pass are finished; only the
+envtest-in-CI integration tests remain, and that's test-file work for the
+tester rather than the coder.
 
-Start Phase 4 by reading `internal/tenant/manifests.go`'s `buildNamespace`
-(for the PodSecurity admission labels item — these are plain namespace
-labels like `pod-security.kubernetes.io/enforce=restricted`, so they slot
-into `tenantLabels`/`buildNamespace` and `Spec` the same way
-`AllowedNamespaces` did in Phase 2) and `tests/e2e_kind_test.go` (for the
-envtest-in-CI item — note CI currently has no docker/kind, which is why e2e
-is gated behind the `e2e` build tag and run manually; envtest doesn't need
-docker, only the `kubebuilder` test-binaries, so it's a better fit for
-actually running in GitHub Actions than the existing kind-based e2e test).
+The CLI now has six commands (`generate`, `create`, `update`, `delete`,
+`list`, `status`), cross-namespace NetworkPolicy allow-listing,
+`--dry-run`/`--diff` modes, GitOps config-file specs via `--file`, live
+per-tenant quota usage reporting via `status` and a `list` summary column,
+and a default-`restricted` Pod Security Admission level per tenant
+(`--pod-security`). Everything through Phase 4 was exercised for real
+against a local `kind` cluster, including: a pod without explicit resource
+requests (defaulted by the tenant's `LimitRange`) deployed and shown as
+non-zero usage in `status`/`list`; a real privileged pod rejected by the
+cluster's PodSecurity admission controller; and `update --pod-security
+baseline` followed by `update --diff` showing the resulting drift and then
+a clean no-op diff after applying it.
+
+Next up, in priority order:
+
+1. **Integration tests via envtest in CI** (the one remaining Phase 4
+   item). Start at `tests/e2e_kind_test.go` (its `e2e` build tag, and why
+   it's gated behind that — CI has no docker/kind, but envtest only needs
+   `kubebuilder` test-binaries, not docker, so it fits GitHub Actions where
+   the kind-based e2e test doesn't). This is test-file work the tester
+   owns, not the coder.
+2. Beyond Phase 4, the only explicitly-deferred item from earlier phases is
+   optional Helm chart packaging (Phase 3) — still not started, still not
+   indicated as needed beyond `generate | kubectl apply -f -`.
+3. Once envtest-in-CI lands (or is explicitly deferred again), this project
+   is substantively feature-complete for its original scope: write
+   DAILY_REPORT.md summarizing all nights' work, and set STATUS: COMPLETE.
 
 STATUS: IN_PROGRESS
