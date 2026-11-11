@@ -16,3 +16,7 @@ jobs:
       - run: go build ./...
       - run: go vet ./...
       - run: go test ./... -cover
+      - name: Install kubebuilder test assets (for envtest-tagged tests)
+        run: |
+          echo "KUBEBUILDER_ASSETS=$(go run sigs.k8s.io/controller-runtime/tools/setup-envtest@v0.25.2 use 1.33.0 -p path)" >> "$GITHUB_ENV"
+      - run: go test -tags envtest ./... -cover

@@ -169,20 +169,32 @@ Design choices:
         troubleshooting guide (real error messages from this project,
         with their actual cause and fix) added to README's Architecture
         section
-  - [ ] Integration tests via envtest in CI — deferred; this is test-file
-        work (`tests/envtest_test.go` or similar) that belongs to the
-        tester, not the coder. CI still has no docker/kind either way,
-        which is why envtest (no docker needed, just `kubebuilder`
-        test-binaries) remains the better fit than the existing
-        `kind`-based e2e test for actually running inside GitHub Actions —
-        see `tests/e2e_kind_test.go`'s `e2e` build tag
+  - [x] envtest infrastructure: `sigs.k8s.io/controller-runtime` added as a
+        direct dependency (`go.mod`/`go.sum`, resolved cleanly against the
+        existing `k8s.io/*` v0.37.2 pins), plus `internal/testutil`
+        (`NewEnvtestEnvironment`, `NewClientset`) — a thin, reusable
+        bootstrap over `envtest.Environment`, verified for real against a
+        live ephemeral API server (not just that it compiles) before being
+        committed. CI (`.github/workflows/ci.yml`) now installs kubebuilder's
+        `etcd`/`kube-apiserver` test binaries via `setup-envtest` and runs
+        `go test -tags envtest ./...`; `make envtest` does the same locally.
+        This was previously blocked on a `go.mod` change that fell outside
+        the tester's test-files-only scope — that blocker is now resolved
+  - [ ] The actual envtest-tagged integration test file (e.g.
+        `tests/envtest_test.go`, `//go:build envtest`) — this is test-file
+        work that belongs to the tester, not the coder. The infrastructure
+        above (dependency, `internal/testutil`, CI wiring, `make envtest`)
+        is in place and proven working; only the test itself remains
 
 ## Resume point for next session
 
-Phases 1 through 3 are complete, and Phase 4 is partially done: PodSecurity
-admission labels and the documentation pass are finished; only the
-envtest-in-CI integration tests remain, and that's test-file work for the
-tester rather than the coder.
+Phases 1 through 3 are complete, and Phase 4 is nearly done: PodSecurity
+admission labels, the documentation pass, and envtest's infrastructure
+(dependency, `internal/testutil`, CI wiring, `make envtest`) are all
+finished. Only the envtest-tagged integration test file itself remains,
+and that's test-file work for the tester rather than the coder — the
+blocker that previously stopped the tester from adding it (a `go.mod`
+change outside test-files-only scope) is now resolved.
 
 The CLI now has six commands (`generate`, `create`, `update`, `delete`,
 `list`, `status`), cross-namespace NetworkPolicy allow-listing,
@@ -199,17 +211,23 @@ a clean no-op diff after applying it.
 
 Next up, in priority order:
 
-1. **Integration tests via envtest in CI** (the one remaining Phase 4
-   item). Start at `tests/e2e_kind_test.go` (its `e2e` build tag, and why
-   it's gated behind that — CI has no docker/kind, but envtest only needs
-   `kubebuilder` test-binaries, not docker, so it fits GitHub Actions where
-   the kind-based e2e test doesn't). This is test-file work the tester
-   owns, not the coder.
+1. **Write the envtest-tagged integration test file** (the one remaining
+   Phase 4 item), e.g. `tests/envtest_test.go` with `//go:build envtest`.
+   Use `internal/testutil.NewEnvtestEnvironment()` to start a real API
+   server and `internal/testutil.NewClientset(cfg)` to get a
+   `kubernetes.Interface` to hand to `tenant.Client` — the same seam the
+   fake-clientset unit tests already use, so this test can exercise
+   `CreateTenant`/`UpdateTenant`/`DeleteTenant`/`ListTenants` against a real
+   (if ephemeral) control plane without Docker or kind. Run it locally with
+   `make envtest`; CI already runs `go test -tags envtest ./...` with
+   `KUBEBUILDER_ASSETS` set. This is test-file work the tester owns, not
+   the coder.
 2. Beyond Phase 4, the only explicitly-deferred item from earlier phases is
    optional Helm chart packaging (Phase 3) — still not started, still not
    indicated as needed beyond `generate | kubectl apply -f -`.
-3. Once envtest-in-CI lands (or is explicitly deferred again), this project
-   is substantively feature-complete for its original scope: write
-   DAILY_REPORT.md summarizing all nights' work, and set STATUS: COMPLETE.
+3. Once the envtest-tagged test lands (or is explicitly deferred again),
+   this project is substantively feature-complete for its original scope:
+   write DAILY_REPORT.md summarizing all nights' work, and set STATUS:
+   COMPLETE.
 
 STATUS: IN_PROGRESS
