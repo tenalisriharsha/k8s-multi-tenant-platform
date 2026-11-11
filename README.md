@@ -315,6 +315,19 @@ Try the full workflow against a real cluster:
 ./scripts/demo.sh           # build tenantctl and run create/list/update/diff/delete against it
 ```
 
+Integration tests can also run against a real, ephemeral API server with no
+Docker or kind cluster at all, via
+[envtest](https://pkg.go.dev/sigs.k8s.io/controller-runtime/pkg/envtest):
+
+```sh
+make envtest
+```
+
+This downloads (and caches) kubebuilder's `etcd`/`kube-apiserver` test
+binaries on first run, then runs the `envtest`-tagged test suite against
+them. `internal/testutil` provides the reusable bootstrap
+(`NewEnvtestEnvironment`, `NewClientset`) that such tests build on.
+
 ## Status
 
 Actively in development. [PROGRESS.md](PROGRESS.md) tracks the
