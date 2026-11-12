@@ -151,7 +151,7 @@ Design choices:
         to be useful, and no indication yet that a packaging format beyond a
         single static binary + `generate | kubectl apply -f -` is wanted
 
-- [ ] **Phase 4 — Hardening & polish** (Night 4)
+- [x] **Phase 4 — Hardening & polish** (Nights 4-5)
   - [x] PodSecurity admission labels per tenant: a `PodSecurityLevel` field
         on `Spec` (`privileged`/`baseline`/`restricted`, empty = no labels,
         matching pre-Phase-4 output byte-for-byte) renders as the standard
@@ -180,54 +180,43 @@ Design choices:
         `go test -tags envtest ./...`; `make envtest` does the same locally.
         This was previously blocked on a `go.mod` change that fell outside
         the tester's test-files-only scope — that blocker is now resolved
-  - [ ] The actual envtest-tagged integration test file (e.g.
-        `tests/envtest_test.go`, `//go:build envtest`) — this is test-file
-        work that belongs to the tester, not the coder. The infrastructure
-        above (dependency, `internal/testutil`, CI wiring, `make envtest`)
-        is in place and proven working; only the test itself remains
+  - [x] `tests/envtest_test.go` (`//go:build envtest`), written by the
+        tester (Night 5): drives `CreateTenant`/`UpdateTenant`/
+        `ListTenants`/`GetTenant`/`DiffTenant`/`DeleteTenant` against a real,
+        ephemeral API server via `internal/testutil`, and asserts the real
+        behavior the fake clientset can't (`kubernetes.io/metadata.name`
+        injection, zero-drift diff after a full reconcile with no
+        apiVersion/kind exception, and a `DeleteTenant` that leaves the
+        namespace `Terminating` rather than vanishing synchronously, since
+        envtest runs no namespace controller). Verified passing for real via
+        `make envtest`, closing the project's last open item
 
 ## Resume point for next session
 
-Phases 1 through 3 are complete, and Phase 4 is nearly done: PodSecurity
-admission labels, the documentation pass, and envtest's infrastructure
-(dependency, `internal/testutil`, CI wiring, `make envtest`) are all
-finished. Only the envtest-tagged integration test file itself remains,
-and that's test-file work for the tester rather than the coder — the
-blocker that previously stopped the tester from adding it (a `go.mod`
-change outside test-files-only scope) is now resolved.
+All four phases are complete. Phase 4's last open item,
+`tests/envtest_test.go`, landed and passes for real (`make envtest`) against
+a live ephemeral `etcd`/`kube-apiserver` pair — `CreateTenant`,
+`UpdateTenant`, `ListTenants`, `GetTenant`, `DiffTenant`, and `DeleteTenant`
+all exercised against a real control plane, not just the fake clientset.
 
-The CLI now has six commands (`generate`, `create`, `update`, `delete`,
-`list`, `status`), cross-namespace NetworkPolicy allow-listing,
-`--dry-run`/`--diff` modes, GitOps config-file specs via `--file`, live
-per-tenant quota usage reporting via `status` and a `list` summary column,
-and a default-`restricted` Pod Security Admission level per tenant
-(`--pod-security`). Everything through Phase 4 was exercised for real
-against a local `kind` cluster, including: a pod without explicit resource
-requests (defaulted by the tenant's `LimitRange`) deployed and shown as
-non-zero usage in `status`/`list`; a real privileged pod rejected by the
-cluster's PodSecurity admission controller; and `update --pod-security
-baseline` followed by `update --diff` showing the resulting drift and then
-a clean no-op diff after applying it.
+The CLI has six commands (`generate`, `create`, `update`, `delete`, `list`,
+`status`), cross-namespace NetworkPolicy allow-listing, `--dry-run`/`--diff`
+modes, GitOps config-file specs via `--file`, live per-tenant quota usage
+reporting via `status` and a `list` summary column, and a default-
+`restricted` Pod Security Admission level per tenant (`--pod-security`).
+Every command has been exercised for real against a local `kind` cluster,
+and the full lifecycle has also been verified against a real `envtest` API
+server with no Docker/kind dependency.
 
-Next up, in priority order:
+The only item not implemented is Helm chart packaging (Phase 3), which was
+explicitly scoped and deferred — a single static binary plus
+`generate | kubectl apply -f -` has covered every real need so far. It's
+recorded as a future idea in DAILY_REPORT.md, not a gap in the current
+scope.
 
-1. **Write the envtest-tagged integration test file** (the one remaining
-   Phase 4 item), e.g. `tests/envtest_test.go` with `//go:build envtest`.
-   Use `internal/testutil.NewEnvtestEnvironment()` to start a real API
-   server and `internal/testutil.NewClientset(cfg)` to get a
-   `kubernetes.Interface` to hand to `tenant.Client` — the same seam the
-   fake-clientset unit tests already use, so this test can exercise
-   `CreateTenant`/`UpdateTenant`/`DeleteTenant`/`ListTenants` against a real
-   (if ephemeral) control plane without Docker or kind. Run it locally with
-   `make envtest`; CI already runs `go test -tags envtest ./...` with
-   `KUBEBUILDER_ASSETS` set. This is test-file work the tester owns, not
-   the coder.
-2. Beyond Phase 4, the only explicitly-deferred item from earlier phases is
-   optional Helm chart packaging (Phase 3) — still not started, still not
-   indicated as needed beyond `generate | kubectl apply -f -`.
-3. Once the envtest-tagged test lands (or is explicitly deferred again),
-   this project is substantively feature-complete for its original scope:
-   write DAILY_REPORT.md summarizing all nights' work, and set STATUS:
-   COMPLETE.
+If resuming this project further: Helm/kustomize packaging, a
+`tenantctl doctor` drift-check command, or per-tenant egress allow-lists to
+external CIDRs are the natural next features — see DAILY_REPORT.md's
+"Future ideas" for the full list.
 
-STATUS: IN_PROGRESS
+STATUS: COMPLETE
