@@ -191,6 +191,45 @@ func TestTenantctlAgainstRealCluster(t *testing.T) {
 		}
 	})
 
+	t.Run("status reports live quota usage for the tenant", func(t *testing.T) {
+		out := mustRun(t, 30*time.Second, repoRoot, binary, append([]string{
+			"status", "e2e-corp",
+		}, ctxArgs...)...)
+		for _, col := range []string{"TENANT", "RESOURCE", "USED", "HARD", "UTILIZATION"} {
+			if !strings.Contains(out, col) {
+				t.Errorf("expected a status table header column %q, got:\n%s", col, out)
+			}
+		}
+		if !strings.Contains(out, "e2e-corp") {
+			t.Errorf("expected status output to mention e2e-corp, got:\n%s", out)
+		}
+		// psa-allow-test (left running by the PSA subtest above, cleaned up
+		// at the very end of this test) counts toward the pods quota, so a
+		// real, non-"no quota data" row with a utilization percentage must
+		// be present by now.
+		if !strings.Contains(out, "pods") || !strings.Contains(out, "%") {
+			t.Errorf("expected a pods usage row with a utilization percentage, got:\n%s", out)
+		}
+		if strings.Contains(out, "no quota data") {
+			t.Errorf("expected real quota usage now that a pod is running, got:\n%s", out)
+		}
+
+		outAll := mustRun(t, 30*time.Second, repoRoot, binary, append([]string{"status"}, ctxArgs...)...)
+		if !strings.Contains(outAll, "e2e-corp") {
+			t.Errorf("expected status with no tenant name to list e2e-corp among all tenants, got:\n%s", outAll)
+		}
+
+		out, err := run(t, 30*time.Second, repoRoot, binary, append([]string{
+			"status", "no-such-tenant",
+		}, ctxArgs...)...)
+		if err == nil {
+			t.Fatalf("expected status to fail for a tenant that doesn't exist, got:\n%s", out)
+		}
+		if !strings.Contains(out, "not found") {
+			t.Errorf("expected a 'not found' error, got:\n%s", out)
+		}
+	})
+
 	t.Run("delete refuses an unmanaged namespace", func(t *testing.T) {
 		mustRun(t, 15*time.Second, repoRoot, "kubectl", "--kubeconfig", kubeconfig,
 			"create", "namespace", "unmanaged-ns")
@@ -231,6 +270,11 @@ func TestTenantctlAgainstRealCluster(t *testing.T) {
 		}
 		if !gone {
 			t.Fatal("namespace e2e-corp was never observed to finish deleting")
+		}
+
+		out = mustRun(t, 30*time.Second, repoRoot, binary, append([]string{"status"}, ctxArgs...)...)
+		if !strings.Contains(out, "no tenants found") {
+			t.Errorf("expected status to report no tenants found once e2e-corp is gone, got:\n%s", out)
 		}
 	})
 }
