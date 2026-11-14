@@ -79,8 +79,12 @@ func validateQuantity(field, value string) error {
 	if value == "" {
 		return fmt.Errorf("%s must not be empty", field)
 	}
-	if _, err := resource.ParseQuantity(value); err != nil {
+	q, err := resource.ParseQuantity(value)
+	if err != nil {
 		return fmt.Errorf("%s: invalid quantity %q: %w", field, value, err)
+	}
+	if q.Sign() < 0 {
+		return fmt.Errorf("%s: invalid quantity %q: must not be negative", field, value)
 	}
 	return nil
 }
