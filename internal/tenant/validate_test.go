@@ -85,6 +85,22 @@ func TestValidate_QuotaQuantities(t *testing.T) {
 				t.Fatalf("expected error for unparsable %s", f.name)
 			}
 		})
+		t.Run(f.name+"/negative", func(t *testing.T) {
+			s := validSpec()
+			f.apply(&s, "-5")
+			if err := Validate(s); err == nil {
+				t.Fatalf("expected error for negative %s (-5), but it passed Validate() -- "+
+					"issue #6: a negative quota value parses fine but is rejected by the API "+
+					"server at apply time, after the namespace has already been created", f.name)
+			}
+		})
+		t.Run(f.name+"/zero is still valid", func(t *testing.T) {
+			s := validSpec()
+			f.apply(&s, "0")
+			if err := Validate(s); err != nil {
+				t.Fatalf("expected zero %s to remain valid, got: %v", f.name, err)
+			}
+		})
 	}
 }
 
@@ -112,6 +128,15 @@ func TestValidate_LimitRangeQuantities(t *testing.T) {
 			f.apply(&s, "nope")
 			if err := Validate(s); err == nil {
 				t.Fatalf("expected error for unparsable %s", f.name)
+			}
+		})
+		t.Run(f.name+"/negative", func(t *testing.T) {
+			s := validSpec()
+			f.apply(&s, "-1Gi")
+			if err := Validate(s); err == nil {
+				t.Fatalf("expected error for negative %s (-1Gi), but it passed Validate() -- "+
+					"issue #6: a negative quantity parses fine but is rejected by the API "+
+					"server at apply time, after the namespace has already been created", f.name)
 			}
 		})
 	}
