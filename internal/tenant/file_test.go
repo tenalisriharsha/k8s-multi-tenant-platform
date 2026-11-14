@@ -141,6 +141,31 @@ func TestLoadSpecFile_MalformedYAML(t *testing.T) {
 	}
 }
 
+// TestLoadSpecFile_UnknownFieldRejected covers issue #7: a typo'd field name
+// in a --file GitOps spec (e.g. allowedNamespces instead of
+// allowedNamespaces) must fail LoadSpecFile with a clear error, not silently
+// drop the field and succeed with a zero-valued AllowedNamespaces.
+func TestLoadSpecFile_UnknownFieldRejected(t *testing.T) {
+	dir := t.TempDir()
+	path := filepath.Join(dir, "typo.yaml")
+	const data = `
+name: typo-test
+quota: {cpuRequest: "2", memoryRequest: 4Gi, cpuLimit: "4", memoryLimit: 8Gi, maxPods: "20"}
+limitRange: {defaultCPURequest: 100m, defaultMemoryRequest: 128Mi, defaultCPULimit: 500m, defaultMemoryLimit: 512Mi}
+allowedNamespces: [ingress-nginx]
+podSecurityLevel: restricted
+adminSubject: {kind: Group, name: typo-admins}
+`
+	if err := os.WriteFile(path, []byte(data), 0o600); err != nil {
+		t.Fatalf("write spec file: %v", err)
+	}
+
+	spec, err := LoadSpecFile(path)
+	if err == nil {
+		t.Fatalf("LoadSpecFile with a typo'd field (allowedNamespces) succeeded silently, got spec: %+v", spec)
+	}
+}
+
 // TestLoadSpecFile_ExampleFileMatchesDocs loads the repo's own
 // examples/tenant.yaml, which README.md and PROGRESS.md point readers at as
 // the canonical --file/-f format, to make sure that exact file still parses
