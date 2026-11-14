@@ -38,7 +38,7 @@ func LoadSpecFile(path string) (Spec, error) {
 	}
 
 	var s Spec
-	if err := sigsyaml.Unmarshal(data, &s); err != nil {
+	if err := sigsyaml.UnmarshalStrict(data, &s); err != nil {
 		return Spec{}, fmt.Errorf("parse spec file %q: %w", path, err)
 	}
 	return s, nil
