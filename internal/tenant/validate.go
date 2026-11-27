@@ -47,6 +47,12 @@ func Validate(s Spec) error {
 	if err := validateQuantity("limitRange.defaultMemoryLimit", s.LimitRange.DefaultMemoryLimit); err != nil {
 		return err
 	}
+	if err := validateRequestNotAboveLimit("limitRange.defaultCPURequest", s.LimitRange.DefaultCPURequest, "limitRange.defaultCPULimit", s.LimitRange.DefaultCPULimit); err != nil {
+		return err
+	}
+	if err := validateRequestNotAboveLimit("limitRange.defaultMemoryRequest", s.LimitRange.DefaultMemoryRequest, "limitRange.defaultMemoryLimit", s.LimitRange.DefaultMemoryLimit); err != nil {
+		return err
+	}
 
 	for _, ns := range s.AllowedNamespaces {
 		if !nameRE.MatchString(ns) {
@@ -85,6 +91,25 @@ func validateQuantity(field, value string) error {
 	}
 	if q.Sign() < 0 {
 		return fmt.Errorf("%s: invalid quantity %q: must not be negative", field, value)
+	}
+	return nil
+}
+
+// validateRequestNotAboveLimit mirrors the Kubernetes API server's own check
+// that a LimitRange's default request must not exceed its matching default
+// limit for the same resource, so the failure surfaces in Validate() instead
+// of at apply time after the Namespace and ResourceQuota already exist.
+func validateRequestNotAboveLimit(requestField, requestValue, limitField, limitValue string) error {
+	req, err := resource.ParseQuantity(requestValue)
+	if err != nil {
+		return fmt.Errorf("%s: invalid quantity %q: %w", requestField, requestValue, err)
+	}
+	limit, err := resource.ParseQuantity(limitValue)
+	if err != nil {
+		return fmt.Errorf("%s: invalid quantity %q: %w", limitField, limitValue, err)
+	}
+	if req.Cmp(limit) > 0 {
+		return fmt.Errorf("%s: default request value %s is greater than %s value %s", requestField, requestValue, limitField, limitValue)
 	}
 	return nil
 }

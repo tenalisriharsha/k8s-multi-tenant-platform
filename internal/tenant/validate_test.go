@@ -142,6 +142,74 @@ func TestValidate_LimitRangeQuantities(t *testing.T) {
 	}
 }
 
+func TestValidate_LimitRangeRequestVsLimit(t *testing.T) {
+	t.Run("cpu default request greater than default limit fails", func(t *testing.T) {
+		s := validSpec()
+		s.LimitRange.DefaultCPURequest = "999"
+		s.LimitRange.DefaultCPULimit = "1"
+		if err := Validate(s); err == nil {
+			t.Fatal("expected error when LimitRange defaultCPURequest (999) exceeds defaultCPULimit (1), but it passed Validate() -- " +
+				"issue #10: a LimitRange whose default request exceeds its default limit parses fine field-by-field but is " +
+				"rejected by the API server at apply time, after the namespace and ResourceQuota have already been created")
+		}
+	})
+
+	t.Run("memory default request greater than default limit fails", func(t *testing.T) {
+		s := validSpec()
+		s.LimitRange.DefaultMemoryRequest = "999Gi"
+		s.LimitRange.DefaultMemoryLimit = "1Gi"
+		if err := Validate(s); err == nil {
+			t.Fatal("expected error when LimitRange defaultMemoryRequest (999Gi) exceeds defaultMemoryLimit (1Gi), but it passed Validate() -- " +
+				"issue #10: a LimitRange whose default request exceeds its default limit parses fine field-by-field but is " +
+				"rejected by the API server at apply time, after the namespace and ResourceQuota have already been created")
+		}
+	})
+
+	t.Run("cpu default request equal to default limit is valid", func(t *testing.T) {
+		s := validSpec()
+		s.LimitRange.DefaultCPURequest = "500m"
+		s.LimitRange.DefaultCPULimit = "500m"
+		if err := Validate(s); err != nil {
+			t.Fatalf("expected defaultCPURequest == defaultCPULimit to be valid, got: %v", err)
+		}
+	})
+
+	t.Run("memory default request equal to default limit is valid", func(t *testing.T) {
+		s := validSpec()
+		s.LimitRange.DefaultMemoryRequest = "512Mi"
+		s.LimitRange.DefaultMemoryLimit = "512Mi"
+		if err := Validate(s); err != nil {
+			t.Fatalf("expected defaultMemoryRequest == defaultMemoryLimit to be valid, got: %v", err)
+		}
+	})
+
+	t.Run("cpu default request less than default limit is valid", func(t *testing.T) {
+		s := validSpec()
+		s.LimitRange.DefaultCPURequest = "100m"
+		s.LimitRange.DefaultCPULimit = "500m"
+		if err := Validate(s); err != nil {
+			t.Fatalf("expected defaultCPURequest < defaultCPULimit to be valid, got: %v", err)
+		}
+	})
+
+	t.Run("memory default request less than default limit is valid", func(t *testing.T) {
+		s := validSpec()
+		s.LimitRange.DefaultMemoryRequest = "128Mi"
+		s.LimitRange.DefaultMemoryLimit = "512Mi"
+		if err := Validate(s); err != nil {
+			t.Fatalf("expected defaultMemoryRequest < defaultMemoryLimit to be valid, got: %v", err)
+		}
+	})
+
+	t.Run("documented default values remain valid", func(t *testing.T) {
+		s := validSpec()
+		s.LimitRange = DefaultLimitRange()
+		if err := Validate(s); err != nil {
+			t.Fatalf("expected DefaultLimitRange() to remain valid, got: %v", err)
+		}
+	})
+}
+
 func TestValidate_AdminSubject(t *testing.T) {
 	t.Run("invalid kind", func(t *testing.T) {
 		s := validSpec()
